@@ -105,6 +105,17 @@ class Settings(BaseSettings):
     multiview_subfolder: str = "hunyuan3d-dit-v2-mv"
     hf_home: str | None = Field(default=None, description="HF cache directory")
 
+    # -- Inference topology --------------------------------------------
+    use_shared_inference: bool = Field(
+        default=True,
+        description=(
+            "When true (default) the manager delegates to a shared "
+            "InferenceService. Set to false to fall back to the "
+            "embedded worker loop (useful for unit tests that mock "
+            "the worker directly)."
+        ),
+    )
+
     # -- Storage paths --------------------------------------------------
     save_dir: str = Field(default=_DEFAULT_SAVE_DIR, description="Output mesh dir")
     job_db: str | None = Field(

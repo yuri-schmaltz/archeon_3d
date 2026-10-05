@@ -17,6 +17,12 @@ export interface PresetInfo {
     steps: number;
     guidance: number;
     octree_resolution: number;
+    /** Measured wall-clock seconds on the calibration device (optional). */
+    expected_elapsed_s?: number;
+    /** Peak VRAM usage observed during calibration (optional). */
+    expected_vram_mb?: number;
+    /** Device the measurement was taken on, e.g. ``"cuda"`` or ``"cpu"``. */
+    calibrated_on?: string;
 }
 
 export interface CapabilityLimits {

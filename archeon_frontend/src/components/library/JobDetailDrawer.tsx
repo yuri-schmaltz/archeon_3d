@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiClient, BASE_URL, errorMessage, authHeaders } from '../../api/client';
+import { signedDownloadUrl } from '../../api/signedDownload';
 import type { JobResponse } from '../../api/types';
 import { useT } from '../../i18n';
 import {
@@ -83,6 +84,19 @@ export const JobDetailDrawer: React.FC<JobDetailDrawerProps> = ({ uid, onClose }
     }, [uid, onClose]);
 
     const src = previewUrl(job);
+
+    const handleDownload = async () => {
+        if (!uid) return;
+        try {
+            const signed = await signedDownloadUrl(uid);
+            // signed URL works without the API key; fallback path appends
+            // ?X-API-Key=... to the plain /files URL.
+            const url = signed ?? `${BASE_URL}/files/${encodeURIComponent(job?.file_path?.split(/[\\/]/).pop() ?? '')}`;
+            window.open(url, '_blank');
+        } catch (err) {
+            setError(errorMessage(err));
+        }
+    };
 
     return (
         <AnimatePresence>
@@ -208,7 +222,7 @@ export const JobDetailDrawer: React.FC<JobDetailDrawerProps> = ({ uid, onClose }
                                             <Button
                                                 variant="ghost"
                                                 size="sm"
-                                                onClick={() => window.open(src, '_blank')}
+                                                onClick={() => void handleDownload()}
                                             >
                                                 ↓ {t('library.download')}
                                             </Button>

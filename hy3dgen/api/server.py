@@ -10,7 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from hy3dgen.api import auth as _auth_module
+from hy3dgen.api import auth as _auth_module, signed_urls as _signed_urls
 from hy3dgen.api.auth import require_api_key
 from hy3dgen.api.config import (
     SAVE_DIR,
@@ -46,6 +46,19 @@ async def lifespan(app: FastAPI):
     # ``start()`` rehydrates from the store before kicking off the
     # processing task, so jobs that were mid-flight when the process
     # died are recovered.
+    from hy3dgen.api.inference_service import InferenceService
+
+    service: InferenceService | None = None
+    if settings.use_shared_inference:
+        service = InferenceService(
+            device=settings.device,
+            save_dir=SAVE_DIR,
+            model_path=settings.model,
+            model_subfolder=settings.model_subfolder,
+            multiview_model=settings.multiview_model,
+            multiview_subfolder=settings.multiview_subfolder,
+        )
+    app.state.inference_service = service
     app.state.manager = PriorityRequestManager(
         device=settings.device,
         max_history=settings.max_history,
@@ -55,6 +68,7 @@ async def lifespan(app: FastAPI):
         multiview_model=settings.multiview_model,
         multiview_subfolder=settings.multiview_subfolder,
         store=store,
+        inference_service=service,
     )
     await app.state.manager.start()
 
@@ -180,15 +194,27 @@ async def _enforce_body_size(request, call_next):
 
 
 class _AuthStaticFiles(StaticFiles):
-    """StaticFiles subclass that enforces ``X-API-Key`` when auth is configured.
+    """StaticFiles subclass that enforces auth on file downloads.
 
-    The default ``StaticFiles`` mount doesn't go through the FastAPI
-    dependency tree, so we wrap ``get_response`` to validate the key
-    ourselves. When ``ARCHEON_API_KEY`` is empty the check is a no-op
-    (local dev).
+    Two acceptance paths are supported:
+
+    1. ``X-API-Key`` header (the classic path) — used by trusted
+       clients (the launcher, scripts).
+    2. Signed URL tokens (see ``signed_urls.py``) — used for sharing
+       with untrusted clients without leaking the API key. A signed
+       token is valid for ``ttl_seconds`` and is bound to a single
+       path.
+
+    When ``ARCHEON_API_KEY`` is empty and no signing key is configured
+    the check is a no-op (local dev).
     """
 
     async def get_response(self, path, scope):
+        # Signed URLs take precedence — they're the only path that
+        # doesn't require the caller to know the API key.
+        query_string = scope.get("query_string", b"").decode("latin-1")
+        if query_string and _signed_urls.verify_signed_url(path, query_string):
+            return await super().get_response(path, scope)
         if _auth_module.get_api_key() is not None:
             # Headers arrive as raw bytes in the ASGI scope.
             headers = {

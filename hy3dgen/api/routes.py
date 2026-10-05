@@ -1,12 +1,15 @@
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from hy3dgen.api import signed_urls
 from hy3dgen.api.config import SAVE_DIR
 from hy3dgen.api.deps import get_manager, get_mesh_processor
 from hy3dgen.api.manager import PriorityRequestManager
@@ -339,6 +342,67 @@ async def cancel_job(uid: str, manager: ManagerDep) -> dict:
         raise HTTPException(status_code=409, detail="A job already processing cannot be cancelled.")
     await manager.cancel_job(uid)
     return {"status": "cancellation_requested", "uid": uid}
+
+
+# ---------------------------------------------------------------------------
+# Signed file URLs
+# ---------------------------------------------------------------------------
+
+
+class SignedFileResponse(BaseModel):
+    """Response schema for the signed-URL endpoint."""
+
+    url: str
+    expires_at: int
+    ttl_seconds: int
+
+
+@router.get(
+    "/jobs/{uid}/download-url",
+    response_model=SignedFileResponse,
+    summary="Mint a short-lived signed URL for the job's mesh output",
+    responses={
+        404: {"description": "Job has no file yet"},
+        503: {"description": "URL signing is disabled (no key configured)"},
+    },
+)
+async def get_signed_download_url(
+    uid: str,
+    manager: ManagerDep,
+    request: Request,
+    ttl_seconds: int = 3600,
+) -> SignedFileResponse:
+    """Mint an HMAC-signed ``/files/<name>.glb`` URL.
+
+    The token is bound to the file's basename, scoped to a TTL (default
+    1 h, capped at 24 h), and verifiable by ``_AuthStaticFiles``
+    without leaking ``ARCHEON_API_KEY``. Falls back to 503 when no
+    signing key is configured so callers know to use the legacy
+    header-based path instead.
+    """
+    job = manager.get_job(uid)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.file_path:
+        raise HTTPException(status_code=404, detail="Job has no file yet")
+    # Build the public base URL from the incoming request so URLs work
+    # behind reverse proxies (X-Forwarded-* handled by uvicorn config).
+    base = str(request.base_url).rstrip("/")
+    signed = signed_urls.build_signed_url(
+        Path(job.file_path).name,
+        ttl_seconds=ttl_seconds,
+        base_url=base,
+    )
+    if signed is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Signed URLs are disabled (no signing key configured).",
+        )
+    return SignedFileResponse(
+        url=signed,
+        expires_at=int(time.time()) + min(ttl_seconds, signed_urls.MAX_TTL_SECONDS),
+        ttl_seconds=min(ttl_seconds, signed_urls.MAX_TTL_SECONDS),
+    )
 
 
 # ---------------------------------------------------------------------------

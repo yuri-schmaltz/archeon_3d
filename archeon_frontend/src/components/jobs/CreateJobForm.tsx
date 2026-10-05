@@ -368,17 +368,32 @@ export const CreateJobForm: React.FC = () => {
                     </summary>
                     <div className="pt-4 space-y-4">
                         <div className="flex flex-wrap gap-2">
-                            {(['fast', 'balanced', 'detailed'] as const).map((key) => (
-                                <Button
-                                    key={key}
-                                    variant="ghost"
-                                    size="sm"
-                                    type="button"
-                                    onClick={() => applyPreset(key)}
-                                >
-                                    {t(`create.preset.${key}`)}
-                                </Button>
-                            ))}
+                            {(['fast', 'balanced', 'detailed'] as const).map((key) => {
+                                const measured = presets[key]?.expected_elapsed_s;
+                                const calibrated = presets[key]?.calibrated_on;
+                                const hint = measured
+                                    ? `≈ ${Math.max(1, Math.round(measured))}s${calibrated ? ` @ ${calibrated}` : ''}`
+                                    : null;
+                                return (
+                                    <Button
+                                        key={key}
+                                        variant="ghost"
+                                        size="sm"
+                                        type="button"
+                                        onClick={() => applyPreset(key)}
+                                        title={hint ?? undefined}
+                                    >
+                                        <span className="flex flex-col items-start leading-tight">
+                                            <span>{t(`create.preset.${key}`)}</span>
+                                            {hint && (
+                                                <span className="text-2xs font-mono opacity-70">
+                                                    {hint}
+                                                </span>
+                                            )}
+                                        </span>
+                                    </Button>
+                                );
+                            })}
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                             <Field

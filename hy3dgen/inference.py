@@ -160,13 +160,24 @@ class ModelWorker:
         else:
             pipeline = self._load_shape_pipeline(multiview)
             started = time.monotonic()
+            # ``mc_algo`` is caller-overridable: "dmc" needs the optional
+            # ``diso`` CUDA package, "mc" works on any device. Defaults
+            # to "dmc" when ``diso`` is available, otherwise falls back.
+            mc_algo = params.get("mc_algo")
+            if mc_algo is None:
+                try:
+                    import diso  # noqa: F401 - availability check
+
+                    mc_algo = "dmc"
+                except ImportError:
+                    mc_algo = "mc"
             mesh = pipeline(
                 image=image,
                 generator=torch.Generator(self.device).manual_seed(params.get("seed", 1234)),
                 octree_resolution=params.get("octree_resolution", 256),
                 num_inference_steps=params.get("steps", 50),
                 guidance_scale=params.get("guidance", 5.0),
-                mc_algo="dmc",
+                mc_algo=mc_algo,
                 output_type="trimesh",
             )[0]
             logger.info("Shape generation took %.2fs", time.monotonic() - started)

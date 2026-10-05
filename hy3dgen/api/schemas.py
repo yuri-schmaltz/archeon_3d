@@ -376,11 +376,21 @@ class ModelInfo(BaseModel):
 
 
 class PresetInfo(BaseModel):
-    """Named parameter preset exposed to the UI."""
+    """Named parameter preset exposed to the UI.
+
+    The optional ``expected_elapsed_s`` / ``expected_vram_mb`` /
+    ``calibrated_on`` fields are populated when a calibration
+    benchmark JSON is present on disk; see
+    ``scripts/benchmark_presets.py`` and
+    ``hy3dgen.api.inference_service._load_calibrated_presets``.
+    """
 
     steps: int
     guidance: float
     octree_resolution: int
+    expected_elapsed_s: float | None = None
+    expected_vram_mb: float | None = None
+    calibrated_on: str | None = None
 
 
 class CapabilityLimits(BaseModel):

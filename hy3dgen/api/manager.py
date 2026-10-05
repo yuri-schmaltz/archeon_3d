@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from hy3dgen.api.metrics import (
     JOB_DURATION,
@@ -19,6 +20,10 @@ from hy3dgen.api.persistence import JobStore
 from hy3dgen.api.schemas import GenerationRequest, JobRequest, JobResponse, JobStatus
 from hy3dgen.api.timeutils import timestamp, utc_now
 from hy3dgen.inference import ModelWorker
+from hy3dgen.version import __version__
+
+if TYPE_CHECKING:
+    from hy3dgen.api.inference_service import InferenceEvent, InferenceService
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,7 @@ class PriorityRequestManager:
         model_subfolder: str = "hunyuan3d-dit-v2-mini-turbo",
         multiview_model: str = "tencent/Hunyuan3D-2mv",
         multiview_subfolder: str = "hunyuan3d-dit-v2-mv",
+        inference_service: "InferenceService | None" = None,
     ):
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self.jobs: dict[str, JobResponse] = {}
@@ -95,8 +101,20 @@ class PriorityRequestManager:
         self._list_subscribers: list[asyncio.Queue] = []
         self._list_subs_lock = threading.Lock()
 
-        # Lazy initialization of the worker to speed up startup
+        # Lazy initialization of the worker to speed up startup.
+        # ``worker`` is now an alias for the InferenceService's underlying
+        # ``ModelWorker`` so legacy code that introspects it keeps working.
         self.worker: ModelWorker | None = None
+
+        # Optional shared inference service. When provided, ``start()``
+        # delegates queue + worker management to the service and the
+        # manager's own loop becomes a thin adapter that mirrors events
+        # onto SSE. When None, the manager falls back to its embedded
+        # loop (preserves the original behaviour for tests).
+        from hy3dgen.api.inference_service import InferenceService
+
+        self.inference_service: InferenceService | None = inference_service
+        self._service_listener: asyncio.Queue | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -163,11 +181,27 @@ class PriorityRequestManager:
         return count
 
     async def start(self):
-        """Start the background worker loop."""
+        """Start the background worker loop.
+
+        When an ``InferenceService`` was injected at construction
+        time, we delegate queue + worker management to it and only
+        attach an event listener that mirrors service events onto
+        SSE. Otherwise we fall back to the embedded loop (the
+        original behaviour preserved for unit tests that mock the
+        worker directly).
+        """
         if self._worker_task is None:
             await self.rehydrate()
-            self._worker_task = asyncio.create_task(self._process_queue())
-            logger.info("PriorityRequestManager worker started.")
+            if self.inference_service is not None:
+                await self.inference_service.start()
+                self._service_listener = self.inference_service.subscribe()
+                self._worker_task = asyncio.create_task(
+                    self._mirror_service_events(), name="api-mirror-service"
+                )
+                logger.info("PriorityRequestManager delegating to InferenceService.")
+            else:
+                self._worker_task = asyncio.create_task(self._process_queue())
+                logger.info("PriorityRequestManager worker started.")
 
     async def stop(self):
         """Stop the worker loop gracefully."""
@@ -177,8 +211,92 @@ class PriorityRequestManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
             self._worker_task = None
+        if self._service_listener is not None and self.inference_service is not None:
+            self.inference_service.unsubscribe(self._service_listener)
+            self._service_listener = None
+            await self.inference_service.stop()
         await self._drain_queue_on_shutdown()
         logger.info("PriorityRequestManager worker stopped.")
+
+    async def _mirror_service_events(self) -> None:
+        """Forward service-level events to JobResponse updates + SSE."""
+        from hy3dgen.api.inference_service import JobStage as ServiceStage
+
+        if self._service_listener is None:
+            return
+        while not self._shutdown_event.is_set():
+            try:
+                event = await asyncio.wait_for(self._service_listener.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            self._apply_service_event(event)
+            # Touch the namespace to satisfy linters in case it's not used.
+            _ = ServiceStage
+
+    def _apply_service_event(self, event: "InferenceEvent") -> None:
+        """Translate an ``InferenceEvent`` into JobResponse mutations + SSE."""
+        from hy3dgen.api.inference_service import JobStage as ServiceStage
+
+        job = self.jobs.get(event.uid)
+        if job is None:
+            # Best-effort: create a stub so SSE clients see the event.
+            job = JobResponse(
+                uid=event.uid,
+                status=JobStatus.QUEUED,
+                request_type=event.request_type,
+                created_at=utc_now(),
+            )
+            self.jobs[event.uid] = job
+        stage = event.stage
+        if stage == ServiceStage.QUEUED:
+            job.status = JobStatus.QUEUED
+            job.request_type = event.request_type
+        elif stage == ServiceStage.LOADING_MODEL:
+            job.stage = "loading_model"
+        elif stage == ServiceStage.SHAPE_GENERATION:
+            job.stage = "shape_generation"
+        elif stage == ServiceStage.TEXTURE:
+            job.stage = "texture"
+        elif stage == ServiceStage.EXPORTING:
+            job.stage = "exporting"
+        elif stage == ServiceStage.COMPLETED:
+            job.status = JobStatus.COMPLETED
+            job.file_path = event.file_path
+            job.completed_at = utc_now()
+        elif stage == ServiceStage.FAILED:
+            job.status = JobStatus.FAILED
+            job.error = event.error
+            job.completed_at = utc_now()
+        elif stage == ServiceStage.CANCELLED:
+            job.status = JobStatus.CANCELLED
+            job.completed_at = utc_now()
+        if event.progress is not None:
+            job.stage_progress = max(0.0, min(1.0, float(event.progress)))
+        if event.error is not None:
+            self.last_error = event.error
+        elif stage == ServiceStage.COMPLETED:
+            self.last_error = None
+        job.updated_at = utc_now()
+        # Persist + notify SSE subscribers.
+        task = asyncio.create_task(self._persist(job))
+        self._track_persist_task(task)
+        self._notify(job)
+
+    def _track_persist_task(self, task: asyncio.Task) -> None:
+        """Hold a strong reference to a background persist task.
+
+        Without this, the GC can collect the task before the
+        ``_persist`` coroutine completes, which logs a warning and
+        risks losing the update.
+        """
+        bag = getattr(self, "_persist_tasks", None)
+        if bag is None:
+            bag = set()
+            self._persist_tasks = bag
+        bag.add(task)
+        task.add_done_callback(bag.discard)
 
     async def submit_job(
         self,
@@ -188,6 +306,11 @@ class PriorityRequestManager:
         _payload: dict | None = None,
     ) -> str:
         """Submit a job to the queue.
+
+        When an ``InferenceService`` is configured, submission is
+        delegated and the service's worker handles execution. The
+        manager still creates the ``JobResponse`` and persists /
+        notifies so HTTP clients see the same behaviour.
 
         Args:
             request: The generation request (polymorphic)
@@ -209,6 +332,15 @@ class PriorityRequestManager:
             request_type=request.type if request else None,
         )
         self.jobs[uid] = job
+
+        if self.inference_service is not None:
+            params = (request.model_dump() if request else {}) or {}
+            params.setdefault("uid", uid)
+            await self.inference_service.submit(params, save_dir=save_dir)
+            logger.info(f"Job {uid} delegated to InferenceService")
+            await self._persist(job, payload=_payload or params)
+            self._notify(job)
+            return uid
 
         # Queue item: (priority, timestamp, uid, request, save_dir)
         # timestamp acts as secondary sort key for FIFO within same priority
@@ -271,83 +403,86 @@ class PriorityRequestManager:
             return
         task = loop.create_task(self._persist(job))
         # Hold the task reference so the GC doesn't drop it mid-flight.
-        self._persist_tasks: set[asyncio.Task] = getattr(self, "_persist_tasks", set())
-        self._persist_tasks.add(task)
-        task.add_done_callback(self._persist_tasks.discard)
+        self._track_persist_task(task)
         self._notify(job)
 
     def capabilities(self) -> dict:
         """Return a snapshot of static + dynamic state for ``/v1/capabilities``.
 
-        The shape matches ``CapabilitiesResponse`` in ``schemas``. The
-        worker may be lazily loaded; ``models[*].loaded`` reflects
-        the current state, while ``modes[*].available`` also accounts
-        for whether the corresponding pipeline is enabled.
+        When an ``InferenceService`` is configured, the snapshot is
+        delegated to the service (which can include calibrated preset
+        timings). Otherwise the legacy worker-introspection path runs.
+        Either way the response shape matches ``CapabilitiesResponse``.
         """
-        worker = self.worker
-        shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
-        tex_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
-        t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
-        mv_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
-        return {
-            "modes": {
-                "text": {
-                    "available": bool(t2i_loaded or shape_loaded),
-                    "reason": None if (t2i_loaded or shape_loaded) else "Shape/text-to-image model not loaded.",
-                    "requires": ["text_to_image"] if not t2i_loaded else [],
+        if self.inference_service is not None:
+            snap = self.inference_service.capabilities()
+        else:
+            worker = self.worker
+            shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
+            tex_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
+            t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
+            mv_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
+            snap = {
+                "modes": {
+                    "text": {
+                        "available": bool(t2i_loaded or shape_loaded),
+                        "reason": None if (t2i_loaded or shape_loaded) else "Shape/text-to-image model not loaded.",
+                        "requires": ["text_to_image"] if not t2i_loaded else [],
+                    },
+                    "image": {
+                        "available": bool(shape_loaded),
+                        "reason": None if shape_loaded else "Shape model not loaded.",
+                        "requires": [],
+                    },
+                    "multiview": {
+                        "available": bool(mv_loaded or shape_loaded),
+                        "reason": None if (mv_loaded or shape_loaded) else "Multiview model not loaded.",
+                        "requires": [],
+                    },
+                    "texture": {
+                        "available": bool(tex_loaded or shape_loaded),
+                        "reason": None if (tex_loaded or shape_loaded) else "Texture model not loaded.",
+                        "requires": [],
+                    },
                 },
-                "image": {
-                    "available": bool(shape_loaded),
-                    "reason": None if shape_loaded else "Shape model not loaded.",
-                    "requires": [],
+                "models": {
+                    "shape": {
+                        "id": self.model_path,
+                        "subfolder": self.model_subfolder,
+                        "loaded": shape_loaded,
+                    },
+                    "multiview": {
+                        "id": self.multiview_model,
+                        "subfolder": self.multiview_subfolder,
+                        "loaded": mv_loaded,
+                    },
+                    "texture": {
+                        "id": getattr(worker, "tex_model_path", "tencent/Hunyuan3D-2")
+                        if worker is not None
+                        else "tencent/Hunyuan3D-2",
+                        "subfolder": None,
+                        "loaded": tex_loaded,
+                    },
+                    "text_to_image": {
+                        "id": "tencent/Hunyuan3D-2",
+                        "subfolder": None,
+                        "loaded": t2i_loaded,
+                    },
                 },
-                "multiview": {
-                    "available": bool(mv_loaded or shape_loaded),
-                    "reason": None if (mv_loaded or shape_loaded) else "Multiview model not loaded.",
-                    "requires": [],
+                "presets": {
+                    "fast": {"steps": 5, "guidance": 5.0, "octree_resolution": 192},
+                    "balanced": {"steps": 50, "guidance": 5.0, "octree_resolution": 256},
+                    "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
                 },
-                "texture": {
-                    "available": bool(tex_loaded or shape_loaded),
-                    "reason": None if (tex_loaded or shape_loaded) else "Texture model not loaded.",
-                    "requires": [],
-                },
-            },
-            "models": {
-                "shape": {
-                    "id": self.model_path,
-                    "subfolder": self.model_subfolder,
-                    "loaded": shape_loaded,
-                },
-                "multiview": {
-                    "id": self.multiview_model,
-                    "subfolder": self.multiview_subfolder,
-                    "loaded": mv_loaded,
-                },
-                "texture": {
-                    "id": getattr(worker, "tex_model_path", "tencent/Hunyuan3D-2")
-                    if worker is not None
-                    else "tencent/Hunyuan3D-2",
-                    "subfolder": None,
-                    "loaded": tex_loaded,
-                },
-                "text_to_image": {
-                    "id": "tencent/Hunyuan3D-2",
-                    "subfolder": None,
-                    "loaded": t2i_loaded,
-                },
-            },
-            "presets": {
-                "fast": {"steps": 5, "guidance": 5.0, "octree_resolution": 192},
-                "balanced": {"steps": 50, "guidance": 5.0, "octree_resolution": 256},
-                "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
-            },
-            "limits": {
-                "image_bytes": 10 * 1024 * 1024,
-                "mesh_bytes": 30 * 1024 * 1024,
-                "queue_depth": self.max_history or 64,
-                "body_bytes": 64 * 1024 * 1024,
-            },
+            }
+        snap["limits"] = {
+            "image_bytes": 10 * 1024 * 1024,
+            "mesh_bytes": 30 * 1024 * 1024,
+            "queue_depth": self.max_history or 64,
+            "body_bytes": 64 * 1024 * 1024,
         }
+        snap["version"] = __version__
+        return snap
 
     async def evict_old_jobs(self, max_age_seconds: int = 24 * 3600) -> int:
         """Drop completed/failed/cancelled jobs older than ``max_age_seconds``.
