@@ -15,6 +15,7 @@ class JobStatus(str, Enum):
 class MeshOpsAction(str, Enum):
     DECIMATE = "decimate"
     CONVERT = "convert"
+    SEPARATE = "separate"
 
 
 class BaseGenerationRequest(BaseModel):
@@ -152,6 +153,46 @@ class MeshOpsRequest(BaseModel):
         le=1.0,
         description="For decimate: target ratio of faces to keep",
         examples=[0.5, 0.25],
+    )
+    # ------------------------------------------------------------------
+    # Fields below are only honoured when ``action == "separate"``.
+    # They mirror the parameters exposed by the ``MeshProcessor`` so
+    # the UI can tune the split without poking at Python internals.
+    # ------------------------------------------------------------------
+    min_face_count: int = Field(
+        500,
+        ge=10,
+        description=(
+            "For separate: discard components with fewer faces than this "
+            "(filters marching-cubes noise)."
+        ),
+        examples=[500, 1000],
+    )
+    only_watertight: bool = Field(
+        False,
+        description=(
+            "For separate: keep only watertight components (recommended "
+            "for 3D-printing workflows)."
+        ),
+        examples=[False, True],
+    )
+    repair: bool = Field(
+        True,
+        description=(
+            "For separate: try to fill small holes in each component "
+            "before checking watertightness."
+        ),
+        examples=[True, False],
+    )
+    min_volume_ratio: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "For separate: discard components whose volume is smaller "
+            "than this fraction of the largest component (0 disables)."
+        ),
+        examples=[0.0, 0.01],
     )
     model_config = ConfigDict(use_enum_values=True)
 

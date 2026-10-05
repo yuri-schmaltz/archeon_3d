@@ -10,13 +10,39 @@ export type JobStatusType = typeof JobStatus[keyof typeof JobStatus];
 
 export type JobType = 'text_to_3d' | 'image_to_3d' | 'multiview' | 'texture_mesh';
 
-export type MeshOpsAction = 'decimate' | 'convert';
+export type MeshOpsAction = 'decimate' | 'convert' | 'separate';
 
 export interface MeshOpsRequest {
     job_uid: string;
     action: MeshOpsAction;
     format?: 'glb' | 'obj' | 'ply' | 'stl';
     ratio?: number;
+    /** Only honoured for action="separate". */
+    min_face_count?: number;
+    /** Only honoured for action="separate". */
+    only_watertight?: boolean;
+    /** Only honoured for action="separate". */
+    repair?: boolean;
+    /** Only honoured for action="separate". */
+    min_volume_ratio?: number;
+}
+
+/**
+ * Inventory of the parts produced by ``POST /v1/meshops/process`` with
+ * ``action="separate"``. Mirrors the response shape added by the
+ * backend so the UI can render a per-part checklist without re-parsing
+ * the resulting GLB.
+ */
+export interface MeshPartInfo {
+    name: string;
+    face_count: number;
+    vertex_count: number;
+}
+
+export interface MeshOpsResponse {
+    file_path: string;
+    /** Only populated when ``action="separate"``. */
+    parts?: MeshPartInfo[];
 }
 
 export interface BaseGenerationRequest {

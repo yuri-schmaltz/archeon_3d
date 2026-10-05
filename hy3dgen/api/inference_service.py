@@ -237,6 +237,44 @@ class InferenceService:
             self._jobs.pop(uid, None)
             return True
 
+    async def warmup(self) -> str:
+        """Eagerly load the inference model into the worker.
+
+        Returns one of:
+          - ``"already_loaded"`` when ``ModelWorker.pipeline`` is set.
+          - ``"loading"`` when a new load was scheduled.
+          - ``"failed"`` if the load raised synchronously.
+
+        Note: building the ``ModelWorker`` instance itself is cheap
+        (it just stores config). The actual weight download + load
+        happens inside ``worker.warmup()``, which we run in a thread
+        so the event loop stays responsive.
+        """
+        from hy3dgen.inference import ModelWorker
+
+        if self._worker is not None and getattr(self._worker, "pipeline", None) is not None:
+            return "already_loaded"
+        try:
+            if self._worker is None:
+                self._worker = await asyncio.to_thread(
+                    ModelWorker,
+                    device=self.device,
+                    model_path=self.model_path,
+                    subfolder=self.model_subfolder,
+                    multiview_model_path=self.multiview_model,
+                    multiview_subfolder=self.multiview_subfolder,
+                    enable_tex=True,
+                    enable_t2i=True,
+                )
+            # Force the actual weight download + load so /models/status
+            # flips to ``loaded=true`` once done.
+            await asyncio.to_thread(self._worker.warmup)
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"warmup failed: {exc}"
+            logger.exception("InferenceService warmup failed")
+            return "failed"
+        return "loading"
+
     def subscribe(self) -> asyncio.Queue[InferenceEvent]:
         """Register a listener. The returned queue receives every event."""
         q: asyncio.Queue[InferenceEvent] = asyncio.Queue()

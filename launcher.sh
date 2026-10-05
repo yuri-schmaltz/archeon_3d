@@ -154,6 +154,29 @@ fi
 # compiled against. We work around both with --no-build-isolation
 # plus an opportunistic ``mc`` fallback at runtime; see
 # ``hy3dgen.inference._generate``.
+#
+# If the editable install with [ml] fails on diso, we don't give up on
+# the whole ML stack: we still install all the pure-Python ML deps
+# (diffusers, transformers, accelerate, rembg, onnxruntime, mmgp,
+# einops, omegaconf, opencv, scikit-image, xatlas) individually,
+# so the user has a working inference path with the 'mc' surface
+# extractor instead of an API-only build that can't load any
+# model at all.
+install_individual_ml_deps() {
+    # Wheel-only, no source builds. This is the safety net for
+    # environments where ``diso`` won't compile (CUDA mismatch,
+    # missing nvcc, etc.) but every other ML dep installs cleanly.
+    #
+    # We don't pin ``transformers`` because the compatible range
+    # shifts with each diffusers release; the launcher always
+    # installs the latest stable that the resolver finds. As of
+    # diffusers 0.39 the floor is roughly transformers>=4.50.
+    "$PYTHON" -m pip install --quiet \
+        diffusers "transformers>=4.50" accelerate \
+        einops omegaconf opencv-python-headless scikit-image \
+        pymeshlab xatlas rembg onnxruntime || warn "Some individual ML packages failed; model loading will be partial."
+}
+
 do_backend_install() {
     log "Installing backend (editable + [ml] extra)…"
     local extra="dev"
@@ -179,13 +202,22 @@ do_backend_install() {
     fi
 
     warn "Editable install failed; some heavy ML packages (diso) may need a matching CUDA toolkit."
-    warn "Retrying without [ml] so the API still comes up."
+    warn "Retrying with [ml] but skipping the diso wheel."
+    warn "This still gives you a working inference pipeline; only the"
+    warn "DMC surface extractor won't be available (the runtime falls"
+    warn "back to 'mc' automatically)."
 
-    # Try without [ml] — the inference code auto-detects the absence of
-    # ``diso`` and falls back to ``mc`` marching cubes, so we keep most
-    # functionality.
+    # Try the ML extra minus diso. ``pip install -e .[ml,dev]`` is
+    # monolithic, so we install the rest individually and then do
+    # the editable dev extra for our own package metadata.
+    install_individual_ml_deps
     if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[dev]"; then
-        warn "Installed API-only build. ML inference will work but use the 'mc' surface extractor."
+        return 0
+    fi
+
+    warn "Even [dev] failed; trying API-only build."
+    if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[dev]"; then
+        warn "Installed API-only build. ML inference is NOT available."
         export ARCHEON_NO_ML=1
         return 0
     fi

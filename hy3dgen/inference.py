@@ -131,6 +131,16 @@ class ModelWorker:
         with torch.inference_mode():
             return self._generate(uid, params, save_dir)
 
+    def warmup(self, multiview: bool = False) -> None:
+        """Eagerly load the shape pipeline so the first ``generate``
+        call doesn't pay the download + load latency.
+
+        This is what ``POST /v1/models/load`` triggers behind the
+        scenes. The download + weight load can take a few minutes on
+        a cold cache; subsequent calls reuse the cached weights.
+        """
+        self._load_shape_pipeline(multiview=multiview)
+
     def _generate(self, uid: str, params: dict, save_dir: str) -> str:
         import torch
 

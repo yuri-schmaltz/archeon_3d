@@ -169,22 +169,25 @@ async def start_model_load(manager: ManagerDep) -> ModelLoadResponse:
     """
     from hy3dgen.api.timeutils import utc_now
 
-    status = manager.warmup_model()
+    # When the manager is delegating to an InferenceService, the
+    # worker lives there. The service exposes a tiny ``warmup``
+    # coroutine; we invoke it so the load actually goes through the
+    # right worker.
+    service = manager.inference_service
+    if service is not None:
+        status = await service.warmup()
+    else:
+        status = manager.warmup_model()
+
     if status == "already_loaded":
-        # Still return 200 with the same shape so clients don't have
-        # to special-case 202 vs 200.
         return ModelLoadResponse(
             status="already_loaded",
-            model=manager.inference_service.model_path
-            if manager.inference_service is not None
-            else manager.model_path,
+            model=service.model_path if service is not None else manager.model_path,
             started_at=utc_now(),
         )
     return ModelLoadResponse(
-        status="loading",
-        model=manager.inference_service.model_path
-        if manager.inference_service is not None
-        else manager.model_path,
+        status=status,
+        model=service.model_path if service is not None else manager.model_path,
         started_at=utc_now(),
     )
 
@@ -202,26 +205,22 @@ async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
     ``POST /v1/models/load`` triggers eagerly).
     """
 
+    # The worker may live on the manager (legacy) or on the
+    # InferenceService (preferred). Check both so the status is
+    # accurate regardless of which path the deployment uses.
     worker = manager.worker
-    model_path = (
-        manager.inference_service.model_path
-        if manager.inference_service is not None
-        else manager.model_path
-    )
+    service = manager.inference_service
+    if service is not None and getattr(service, "_worker", None) is not None:
+        worker = service._worker
+    model_path = service.model_path if service is not None else manager.model_path
     subfolder = (
-        manager.inference_service.model_subfolder
-        if manager.inference_service is not None
-        else manager.model_subfolder
+        service.model_subfolder if service is not None else manager.model_subfolder
     )
-    device = (
-        manager.inference_service.device
-        if manager.inference_service is not None
-        else manager.device
-    )
+    device = service.device if service is not None else manager.device
     pipeline = getattr(worker, "pipeline", None) if worker is not None else None
     last_error = manager.last_error
-    if manager.inference_service is not None:
-        last_error = manager.inference_service.last_error or last_error
+    if service is not None and service.last_error is not None:
+        last_error = service.last_error
     return ModelStatusResponse(
         loaded=pipeline is not None,
         loading=False,  # reserved for future streaming progress
@@ -573,7 +572,7 @@ async def get_metrics(manager: ManagerDep) -> dict:
 
 @router.post(
     "/meshops/process",
-    summary="Decimate or convert an existing job's mesh",
+    summary="Decimate, convert or separate an existing job's mesh",
     responses={
         404: {"description": "Source job or its mesh not found"},
         500: {"description": "Mesh processing failed"},
@@ -584,7 +583,18 @@ async def process_mesh(
     manager: ManagerDep,
     processor: MeshProcessorDep,
 ) -> dict:
-    """Process an existing job's output mesh (decimate / convert)."""
+    """Process an existing job's output mesh.
+
+    Supported actions:
+
+    * ``decimate``  - reduce face count
+    * ``convert``   - re-encode (format conversion only)
+    * ``separate``  - split the mesh into connected components and
+      return a multi-body GLB/OBJ (Meshy/Hi3D "Auto-Separate Parts"
+      equivalent). The response includes a ``parts`` array with the
+      name and face count of every component so the UI can render a
+      list.
+    """
     job = manager.get_job(request.job_uid)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -594,6 +604,8 @@ async def process_mesh(
     base_name = Path(job.file_path).stem
     if request.action == "decimate":
         suffix = f"_decimate_{request.ratio:.2f}"
+    elif request.action == "separate":
+        suffix = "_separate"
     else:
         suffix = f"_{request.action}"
     output_path = str(Path(SAVE_DIR) / f"{base_name}{suffix}.{request.format}")
@@ -608,6 +620,44 @@ async def process_mesh(
             request.action,
             request.model_dump(),
         )
-        return {"file_path": path}
+        response: dict = {"file_path": path}
+        # When separating, surface a part list so the UI can render a
+        # checklist without having to re-parse the GLB.
+        if request.action == "separate":
+            response["parts"] = _list_separated_parts(path)
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _list_separated_parts(path: str) -> list[dict]:
+    """Return a lightweight inventory of every node in a multi-body GLB.
+
+    Each entry carries the node ``name``, ``face_count`` and a
+    ``vertex_count`` so the UI can size the chips without re-loading
+    the mesh. Designed to never raise: the endpoint still returns
+    ``file_path`` on success even if part introspection fails.
+    """
+    try:
+        import trimesh
+
+        scene = trimesh.load(path, force="scene")
+    except Exception:
+        return []
+    parts: list[dict] = []
+    try:
+        for name, geom in scene.geometry.items():
+            face_count = len(getattr(geom, "faces", []))
+            vertex_count = len(getattr(geom, "vertices", []))
+            parts.append(
+                {
+                    "name": name,
+                    "face_count": face_count,
+                    "vertex_count": vertex_count,
+                }
+            )
+    except Exception:
+        return parts
+    # Largest part first so the UI's default ordering matches Meshy.
+    parts.sort(key=lambda p: p["face_count"], reverse=True)
+    return parts

@@ -14,8 +14,8 @@ import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiClient, BASE_URL, errorMessage } from "../../api/client";
 import { JobStatus } from "../../api/types";
-import type { JobResponse, JobStatusType } from "../../api/types";
-import { X, Download, Scissors, Eye, EyeOff } from "lucide-react";
+import type { JobResponse, JobStatusType, MeshOpsResponse } from "../../api/types";
+import { X, Download, Scissors, Eye, EyeOff, Layers } from "lucide-react";
 import { MeshPreview } from "./MeshPreview";
 import { useJobEvents } from "../../context/useJobEvents";
 import {
@@ -52,6 +52,12 @@ export const JobGallery: React.FC = () => {
   const [pendingUid, setPendingUid] = useState<string | null>(null);
   const [previewingUid, setPreviewingUid] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [separatingUid, setSeparatingUid] = useState<string | null>(null);
+  // Last successful separation: { sourceUid, response }
+  const [lastSeparated, setLastSeparated] = useState<{
+    uid: string;
+    response: MeshOpsResponse;
+  } | null>(null);
   const { jobs: streamJobs, isFallback: listIsFallback, connected: listConnected,
     loading, lastError, refetch: refetchList } = useJobEvents();
   const error = actionError ?? lastError;
@@ -90,8 +96,40 @@ export const JobGallery: React.FC = () => {
     } finally { setPendingUid(null); }
   };
 
+  const handleSeparate = async (uid: string) => {
+    setSeparatingUid(uid);
+    setActionError(null);
+    try {
+      const res = await apiClient.post<MeshOpsResponse>(
+        "/meshops/process",
+        {
+          job_uid: uid,
+          action: "separate",
+          // Conservative defaults that match what Meshy/Hi3D ship
+          // out of the box; UI can later expose a slider.
+          min_face_count: 500,
+          only_watertight: false,
+          repair: true,
+          min_volume_ratio: 0.0,
+        },
+      );
+      setLastSeparated({ uid, response: res.data });
+      // Auto-preview the multi-body GLB in-place.
+      setPreviewingUid(uid);
+    } catch (err) {
+      console.error(err);
+      setActionError(errorMessage(err));
+    } finally { setSeparatingUid(null); }
+  };
+
   const previewUrl = (job: JobResponse): string | null => {
     if (!job.file_path) return null;
+    // If this job was just separated, point the preview at the
+    // multi-body GLB produced by the backend.
+    if (lastSeparated && lastSeparated.uid === job.uid) {
+      const fname = lastSeparated.response.file_path.split(/[\\/]/).pop();
+      return `${BASE_URL}/files/${encodeURIComponent(fname ?? "")}`;
+    }
     const fname = job.file_path.split(/[\\/]/).pop();
     return `${BASE_URL}/files/${encodeURIComponent(fname ?? "")}`;
   };
@@ -101,6 +139,10 @@ export const JobGallery: React.FC = () => {
     : null;
   const previewedJob =
     previewedFromList;
+  const separatedForPreview =
+    previewedJob && lastSeparated && lastSeparated.uid === previewedJob.uid
+      ? lastSeparated.response
+      : null;
 
   const visible =
     statusFilter === "all"
@@ -262,6 +304,72 @@ export const JobGallery: React.FC = () => {
                 alt={`Mesh for job ${previewedJob.uid}`}
                 height={320}
               />
+              {/* Parts inventory — only shown after a successful separate. */}
+              {separatedForPreview && (
+                <div className="mt-3 pt-3 border-t border-border">
+                  <Stack direction="row" gap={2} align="baseline">
+                    <Text
+                      voice="mono"
+                      size="2xs"
+                      tone="muted"
+                      tracking="widest"
+                      uppercase
+                    >
+                      Parts ({separatedForPreview.parts?.length ?? 0})
+                    </Text>
+                    <Text
+                      voice="mono"
+                      size="2xs"
+                      tone="dim"
+                      tracking="wider"
+                    >
+                      · multi-body GLB
+                    </Text>
+                  </Stack>
+                  {separatedForPreview.parts &&
+                  separatedForPreview.parts.length > 0 ? (
+                    <ul className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {separatedForPreview.parts.map((part, idx) => (
+                        <li
+                          key={part.name}
+                          className="flex items-center justify-between px-3 py-2 rounded-sm border border-border bg-surface-1"
+                        >
+                          <Stack direction="row" gap={2} align="center">
+                            <Text
+                              voice="mono"
+                              size="2xs"
+                              tone="muted"
+                              tracking="wider"
+                            >
+                              {String(idx + 1).padStart(2, "0")}
+                            </Text>
+                            <Text
+                              voice="mono"
+                              size="xs"
+                              tone="fg"
+                              className="truncate"
+                            >
+                              {part.name}
+                            </Text>
+                          </Stack>
+                          <Pill tone="muted">
+                            {part.face_count.toLocaleString()} faces
+                          </Pill>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <Text
+                      voice="mono"
+                      size="xs"
+                      tone="dim"
+                      className="mt-2"
+                    >
+                      No parts detected (try lowering min_face_count).
+                    </Text>
+                  )}
+                </div>
+              )}
             </div>
             <Divider />
           </motion.div>
@@ -297,12 +405,14 @@ export const JobGallery: React.FC = () => {
               key={job.uid}
               job={job}
               pending={pendingUid === job.uid}
+              separating={separatingUid === job.uid}
               isPreviewing={previewingUid === job.uid}
               onPreviewToggle={() =>
                 setPreviewingUid(previewingUid === job.uid ? null : job.uid)
               }
               onCancel={() => handleCancel(job.uid)}
               onOptimize={() => handleOptimize(job.uid)}
+              onSeparate={() => handleSeparate(job.uid)}
               previewUrl={previewUrl(job)}
             />
           ))}
@@ -317,12 +427,14 @@ export const JobGallery: React.FC = () => {
 const JobRow: React.FC<{
   job: JobResponse;
   pending: boolean;
+  separating: boolean;
   isPreviewing: boolean;
   previewUrl: string | null;
   onPreviewToggle: () => void;
   onCancel: () => void;
   onOptimize: () => void;
-}> = ({ job, pending, isPreviewing, previewUrl, onPreviewToggle, onCancel, onOptimize }) => {
+  onSeparate: () => void;
+}> = ({ job, pending, separating, isPreviewing, previewUrl, onPreviewToggle, onCancel, onOptimize, onSeparate }) => {
   const kind = kindByStatus[job.status];
   const isDone = job.status === JobStatus.COMPLETED;
   const isCancellable =
@@ -406,6 +518,16 @@ const JobRow: React.FC<{
               aria-label="Optimize mesh"
             >
               <Scissors size={12} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onSeparate}
+              disabled={separating || pending}
+              title="Separate parts"
+              aria-label="Separate parts"
+            >
+              <Layers size={12} />
             </Button>
           </>
         )}

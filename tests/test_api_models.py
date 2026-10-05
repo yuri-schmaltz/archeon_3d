@@ -232,3 +232,52 @@ class TestMeshOpsRequest:
         )
         assert req.ratio == 0.25
         assert req.format == "obj"
+
+    def test_separate_defaults(self):
+        """The new SEPARATE action shares the MeshOpsRequest schema."""
+        req = MeshOpsRequest(job_uid="abc", action=MeshOpsAction.SEPARATE)
+        # Enum should survive the round-trip and serialise to its value.
+        assert req.action == MeshOpsAction.SEPARATE
+        # Defaults are tuned for "real" geometry, not micro-floaters.
+        assert req.min_face_count == 500
+        assert req.only_watertight is False
+        assert req.repair is True
+        assert req.min_volume_ratio == 0.0
+
+    def test_separate_accepts_string_action(self):
+        """HTTP clients send the enum as a plain string."""
+        req = MeshOpsRequest(job_uid="abc", action="separate")
+        assert req.action == MeshOpsAction.SEPARATE
+
+    def test_separate_custom_tuning(self):
+        req = MeshOpsRequest(
+            job_uid="abc",
+            action=MeshOpsAction.SEPARATE,
+            min_face_count=2000,
+            only_watertight=True,
+            repair=False,
+            min_volume_ratio=0.01,
+            format="obj",
+        )
+        assert req.min_face_count == 2000
+        assert req.only_watertight is True
+        assert req.repair is False
+        assert req.min_volume_ratio == 0.01
+        assert req.format == "obj"
+
+    def test_separate_validates_min_face_count(self):
+        with pytest.raises(ValidationError):
+            MeshOpsRequest(job_uid="abc", action="separate", min_face_count=0)
+
+    def test_separate_validates_min_volume_ratio(self):
+        with pytest.raises(ValidationError):
+            MeshOpsRequest(job_uid="abc", action="separate", min_volume_ratio=1.5)
+
+    def test_separate_serialises_to_string_action(self):
+        """``use_enum_values=True`` means model_dump yields the string."""
+        req = MeshOpsRequest(job_uid="abc", action=MeshOpsAction.SEPARATE)
+        assert req.model_dump()["action"] == "separate"
+
+    def test_action_enum_has_separate(self):
+        assert MeshOpsAction.SEPARATE.value == "separate"
+        assert "separate" in {a.value for a in MeshOpsAction}
