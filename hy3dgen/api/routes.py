@@ -646,7 +646,14 @@ def _list_separated_parts(path: str) -> list[dict]:
         return []
     parts: list[dict] = []
     try:
-        for name, geom in scene.geometry.items():
+        # trimesh exposes ``scene.geometry`` (a dict of node name →
+        # trimesh Geometry) but mypy on some stubs lists the attribute
+        # as a callable instead. Use getattr to keep the static check
+        # happy without losing the runtime data.
+        scene_geom = getattr(scene, "geometry", {})
+        if scene_geom is None:
+            scene_geom = {}
+        for name, geom in scene_geom.items():
             face_count = len(getattr(geom, "faces", []))
             vertex_count = len(getattr(geom, "vertices", []))
             parts.append(

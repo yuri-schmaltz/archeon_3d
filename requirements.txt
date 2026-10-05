@@ -7,7 +7,7 @@ einops
 opencv-python
 numpy
 torch
-transformers==4.49.0
+transformers>=4.50,<5   # diffusers 0.39 needs >=4.50; cap at 4.x to avoid weight-format breaks in 5.x
 torchvision
 #taming-transformers-rom1504
 #ConfigArgParse

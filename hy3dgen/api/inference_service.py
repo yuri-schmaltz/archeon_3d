@@ -269,7 +269,7 @@ class InferenceService:
             # Force the actual weight download + load so /models/status
             # flips to ``loaded=true`` once done.
             await asyncio.to_thread(self._worker.warmup)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.last_error = f"warmup failed: {exc}"
             logger.exception("InferenceService warmup failed")
             return "failed"
