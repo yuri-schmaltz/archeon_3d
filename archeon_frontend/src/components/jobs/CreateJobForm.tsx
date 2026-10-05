@@ -81,19 +81,15 @@ export const CreateJobForm: React.FC = () => {
         }
     };
 
-    // Fallback to an available mode if the active one becomes unavailable.
-    useEffect(() => {
-        const modes = capabilities?.modes;
-        if (!modes) return;
-        const current = modes[hint];
-        if (current && current.available === false) {
-            const next = (Object.entries(modes) as Array<[
-                ModeKey,
-                { available: boolean; reason: string | null; requires: string[] },
-            ]>).find(([, info]) => info.available);
-            if (next) setHint(next[0]);
-        }
-    }, [capabilities, hint]);
+    // The form no longer auto-switches the user away from an
+    // ``unavailable`` mode: pre-blocking would force the user to
+    // re-pick the mode they actually wanted every time the model
+    // briefly disconnects. Instead the mode chip shows a small
+    // amber dot + tooltip, and the actual job submission surfaces
+    // a clear server-side error.
+    //
+    // (The previous effect lived here; kept this comment as a
+    // marker so future refactors don't reintroduce the auto-flip.)
 
     // Reuse parameters from the library (?reuse=<uid>).
     useEffect(() => {
@@ -264,6 +260,21 @@ export const CreateJobForm: React.FC = () => {
                     </Button>
                 </div>
                 <Divider />
+
+                {/* Model status banner — visible only when at least one
+                    backend mode is unavailable. We keep the form fully
+                    interactive (the user can still pick a mode and type
+                    their prompt) and surface the real error from the
+                    server at submit time. */}
+                {Object.values(capabilities.modes).some((m) => m.available === false) && (
+                    <div
+                        role="status"
+                        data-testid="model-status-banner"
+                        className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90"
+                    >
+                        {t('create.banner.modelNotLoaded')}
+                    </div>
+                )}
 
                 {/* Mode tabs */}
                 <ModeChips

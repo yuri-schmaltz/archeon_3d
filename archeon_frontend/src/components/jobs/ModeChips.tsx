@@ -3,7 +3,16 @@
  *
  * Not pills. Not buttons. A row of monospace, uppercase labels with
  * an amber underline on the active one. The glyphs on the left
- * (``Aa``, ``◐``, ``⊞``, ``◈``) communicate the mode at a glance.
+ * (``Aa``, ``▢``, ``▦``, ``◇``) communicate the mode at a glance.
+ *
+ * Modes are always selectable. When the backend reports a mode as
+ * ``unavailable`` (e.g. the inference model isn't loaded yet) we
+ * show a small ``●`` dot next to the label and a tooltip with the
+ * reason, but the user can still pick the mode and configure the
+ * form. The actual job submission will surface the real error from
+ * the server with a clear message; pre-blocking the UI is a worse
+ * experience (the user has to wait for the model to load before
+ * they can start typing their prompt).
  */
 import React from "react";
 import { clsx } from "clsx";
@@ -12,9 +21,9 @@ export type ModeKey = "text" | "image" | "multiview" | "texture";
 
 const MODES: { key: ModeKey; glyph: string; label: string; hint: string }[] = [
   { key: "text", glyph: "Aa", label: "Text", hint: "Prompt → mesh" },
-  { key: "image", glyph: "◐", label: "Image", hint: "Single view → mesh" },
-  { key: "multiview", glyph: "⊞", label: "4 Views", hint: "Multi-view → mesh" },
-  { key: "texture", glyph: "◈", label: "Re-texture", hint: "Mesh + reference" },
+  { key: "image", glyph: "▢", label: "Image", hint: "Single view → mesh" },
+  { key: "multiview", glyph: "▦", label: "4 Views", hint: "Multi-view → mesh" },
+  { key: "texture", glyph: "◇", label: "Re-texture", hint: "Mesh + reference" },
 ];
 
 interface ModeChipsProps {
@@ -29,20 +38,18 @@ export const ModeChips: React.FC<ModeChipsProps> = ({ value, onChange, availabil
     {MODES.map((m) => {
       const active = m.key === value;
       const cap = availability?.[m.key];
-      const disabled = cap ? cap.available === false : false;
-      const reason = cap?.reason;
+      const unavailable = cap?.available === false;
+      const reason = cap?.reason ?? null;
       return (
         <button
           type="button"
           key={m.key}
           role="tab"
           aria-selected={active}
-          aria-disabled={disabled || undefined}
           id={`mode-tab-${m.key}`}
           aria-controls={`mode-panel-${m.key}`}
           tabIndex={active ? 0 : -1}
           onKeyDown={(event) => {
-            if (disabled) return;
             const index = MODES.findIndex((mode) => mode.key === value);
             let next = index;
             if (event.key === "ArrowRight") next = (index + 1) % MODES.length;
@@ -55,25 +62,26 @@ export const ModeChips: React.FC<ModeChipsProps> = ({ value, onChange, availabil
             onChange(MODES[next].key);
             document.getElementById(`mode-tab-${MODES[next].key}`)?.focus();
           }}
-          onClick={() => {
-            if (disabled) return;
-            onChange(m.key);
-          }}
-          title={disabled && reason ? `${m.hint} — unavailable: ${reason}` : m.hint}
+          onClick={() => onChange(m.key)}
+          title={
+            unavailable && reason
+              ? `${m.hint} — backend reports unavailable: ${reason}. You can still configure; the server will return a clear error on submit.`
+              : m.hint
+          }
           aria-label={
-            disabled
-              ? `${m.label} mode unavailable${reason ? `: ${reason}` : ""}`
+            unavailable
+              ? `${m.label} mode (backend reports unavailable: ${reason ?? "model not loaded"})`
               : m.label
           }
+          data-unavailable={unavailable || undefined}
           className={clsx(
             "group relative shrink-0 px-4 h-11 flex items-center gap-2",
             "font-mono text-xs uppercase tracking-wider",
             "border-b-2 -mb-px transition-colors duration-[120ms] " +
               "ease-[cubic-bezier(0.16,1,0.3,1)]",
             "focus:outline-none focus-visible:text-fg",
-            disabled
-              ? "border-transparent text-fg-dim cursor-not-allowed opacity-50"
-              : active
+            "cursor-pointer",
+            active
               ? "border-accent text-fg"
               : "border-transparent text-fg-muted hover:text-fg",
           )}
@@ -81,13 +89,21 @@ export const ModeChips: React.FC<ModeChipsProps> = ({ value, onChange, availabil
           <span
             aria-hidden="true"
             className={clsx(
-              "text-sm",
-              active && !disabled ? "text-accent" : "opacity-60",
+              "text-sm leading-none",
+              active ? "text-accent" : "opacity-70",
             )}
           >
             {m.glyph}
           </span>
           <span>{m.label}</span>
+          {unavailable && (
+            <span
+              aria-hidden="true"
+              data-testid="mode-unavailable-indicator"
+              className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400/80"
+              title={reason ?? "Model not loaded"}
+            />
+          )}
         </button>
       );
     })}

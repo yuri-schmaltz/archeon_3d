@@ -59,6 +59,8 @@ const catalogs: Record<Locale, Catalog> = {
         'create.texture': 'Gerar textura',
         'create.submit': 'Gerar modelo',
         'create.submit.busy': 'Enviando…',
+        'create.banner.modelNotLoaded':
+            'Modelo do backend ainda não carregado. Você pode configurar o job; o envio só vai funcionar quando o modelo estiver pronto. O ponto ao lado de cada modo indica a disponibilidade.',
         'create.error.unsupportedType': 'Tipo de imagem não suportado. Use PNG, JPEG ou WebP.',
         'create.error.imageTooLarge': 'Imagem muito grande. Máximo {max} MB.',
         'create.error.viewTooLarge': 'Vista "{view}" muito grande. Máximo {max} MB.',
@@ -161,6 +163,8 @@ const catalogs: Record<Locale, Catalog> = {
         'create.texture': 'Generate texture',
         'create.submit': 'Generate model',
         'create.submit.busy': 'Submitting…',
+        'create.banner.modelNotLoaded':
+            'Backend model is not loaded yet. You can configure the job; submission will only succeed once the model is ready. The dot next to each mode indicates availability.',
         'create.error.unsupportedType': 'Unsupported image type. Use PNG, JPEG or WebP.',
         'create.error.imageTooLarge': 'Image too large. Max {max} MB.',
         'create.error.viewTooLarge': 'View "{view}" too large. Max {max} MB.',
