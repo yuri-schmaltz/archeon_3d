@@ -28,6 +28,15 @@ interface AdminStats {
     max_history: number;
 }
 
+interface ModelStatus {
+    loaded: boolean;
+    loading: boolean;
+    model: string;
+    subfolder: string | null;
+    device: string;
+    last_error: string | null;
+}
+
 function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KiB`;
@@ -38,23 +47,55 @@ export const SystemPage: React.FC = () => {
     const t = useT();
     const [stats, setStats] = useState<AdminStats | null>(null);
     const [capabilities, setCapabilities] = useState<CapabilitiesLite | null>(null);
+    const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [warmupBusy, setWarmupBusy] = useState(false);
+    const [warmupMessage, setWarmupMessage] = useState<string | null>(null);
 
     const reload = async () => {
         setBusy(true);
         setError(null);
         try {
-            const [s, c] = await Promise.all([
+            const [s, c, m] = await Promise.all([
                 apiClient.get<AdminStats>('/admin/stats', { headers: authHeaders() }),
                 apiClient.get<CapabilitiesLite>('/capabilities', { headers: authHeaders() }),
+                apiClient
+                    .get<ModelStatus>('/models/status', { headers: authHeaders() })
+                    .catch(() => null),
             ]);
             setStats(s.data);
             setCapabilities(c.data);
+            setModelStatus(m?.data ?? null);
         } catch (err) {
             setError(errorMessage(err));
         } finally {
             setBusy(false);
+        }
+    };
+
+    const triggerWarmup = async () => {
+        setWarmupBusy(true);
+        setWarmupMessage(null);
+        try {
+            const res = await apiClient.post<{ status: string; model: string }>(
+                '/models/load',
+                {},
+                { headers: authHeaders() },
+            );
+            if (res.data.status === 'already_loaded') {
+                setWarmupMessage('Modelo já está carregado.');
+            } else {
+                setWarmupMessage(
+                    `Carregando ${res.data.model}… o download pode levar alguns minutos na primeira vez.`,
+                );
+            }
+            // Auto-refresh after a few seconds so the loaded flag updates.
+            setTimeout(() => void reload(), 4_000);
+        } catch (err) {
+            setWarmupMessage(`Falha ao iniciar: ${errorMessage(err)}`);
+        } finally {
+            setWarmupBusy(false);
         }
     };
 
@@ -112,9 +153,53 @@ export const SystemPage: React.FC = () => {
             <Divider />
 
             <Stack gap={3}>
-                <Text voice="mono" size="2xs" tone="muted" tracking="widest" uppercase>
-                    {t('system.models')}
-                </Text>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <Text voice="mono" size="2xs" tone="muted" tracking="widest" uppercase>
+                        {t('system.models')}
+                    </Text>
+                    <Button
+                        data-testid="warmup-button"
+                        variant={modelStatus?.loaded ? 'ghost' : 'primary'}
+                        size="sm"
+                        onClick={() => void triggerWarmup()}
+                        disabled={warmupBusy}
+                    >
+                        {warmupBusy
+                            ? 'Iniciando…'
+                            : modelStatus?.loaded
+                            ? 'Recarregar modelo'
+                            : 'Carregar modelo agora'}
+                    </Button>
+                </div>
+
+                {modelStatus && (
+                    <div
+                        data-testid="model-status-card"
+                        className="border border-border rounded p-3 bg-surface-1/30 space-y-2"
+                    >
+                        <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                            <Pill tone={modelStatus.loaded ? 'accent' : 'muted'}>
+                                {modelStatus.loaded ? '✓ carregado' : '○ não carregado'}
+                            </Pill>
+                            <Text voice="mono" size="xs" tone="muted">
+                                {modelStatus.model}
+                                {modelStatus.subfolder ? ` / ${modelStatus.subfolder}` : ''}
+                            </Text>
+                            <Pill tone="muted">{modelStatus.device}</Pill>
+                        </div>
+                        {warmupMessage && (
+                            <Text voice="body" size="xs" tone="muted">
+                                {warmupMessage}
+                            </Text>
+                        )}
+                        {modelStatus.last_error && (
+                            <Pill tone="danger">
+                                Último erro: {modelStatus.last_error}
+                            </Pill>
+                        )}
+                    </div>
+                )}
+
                 {capabilities && typeof capabilities.models === 'object' && capabilities.models !== null && (
                     <ul className="space-y-2">
                         {Object.entries(capabilities.models).map(([key, info]) => (

@@ -39,6 +39,45 @@ MeshProcessorDep = Annotated[MeshProcessor, Depends(get_mesh_processor)]
 
 
 # ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+
+class SignedFileResponse(BaseModel):
+    """Response schema for the signed-URL endpoint."""
+
+    url: str
+    expires_at: int
+    ttl_seconds: int
+
+
+class ModelLoadResponse(BaseModel):
+    """Response schema for ``POST /v1/models/load``.
+
+    The endpoint is async — the actual download / weight load runs in
+    a thread on the inference worker. Clients poll
+    ``GET /v1/models/status`` to see when the model is ready.
+    """
+
+    status: str
+    model: str
+    started_at: str
+
+
+class ModelStatusResponse(BaseModel):
+    """Response schema for ``GET /v1/models/status``."""
+
+    loaded: bool
+    loading: bool
+    model: str
+    subfolder: str | None = None
+    device: str
+    last_error: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Submission endpoints
 # ---------------------------------------------------------------------------
 
@@ -101,6 +140,96 @@ async def capabilities(manager: ManagerDep) -> CapabilitiesResponse:
     snap = manager.capabilities()
     snap["version"] = __version__
     return CapabilitiesResponse(**snap)
+
+
+# ---------------------------------------------------------------------------
+# Model lifecycle
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/models/load",
+    response_model=ModelLoadResponse,
+    summary="Trigger a model warm-up (download + load weights into VRAM)",
+    responses={
+        202: {"description": "Warm-up started; poll ``/v1/models/status``"},
+        409: {"description": "A load is already in progress"},
+    },
+)
+async def start_model_load(manager: ManagerDep) -> ModelLoadResponse:
+    """Kick off the inference model load in the background.
+
+    The endpoint returns 202 immediately. The actual download +
+    weight load happens on the inference worker thread; use
+    ``GET /v1/models/status`` to track progress (or just submit a
+    job once the System page shows ``loaded: true``).
+
+    If the model is already loaded, this is a no-op and returns
+    the same shape with ``status="already_loaded"``.
+    """
+    from hy3dgen.api.timeutils import utc_now
+
+    status = manager.warmup_model()
+    if status == "already_loaded":
+        # Still return 200 with the same shape so clients don't have
+        # to special-case 202 vs 200.
+        return ModelLoadResponse(
+            status="already_loaded",
+            model=manager.inference_service.model_path
+            if manager.inference_service is not None
+            else manager.model_path,
+            started_at=utc_now(),
+        )
+    return ModelLoadResponse(
+        status="loading",
+        model=manager.inference_service.model_path
+        if manager.inference_service is not None
+        else manager.model_path,
+        started_at=utc_now(),
+    )
+
+
+@router.get(
+    "/models/status",
+    response_model=ModelStatusResponse,
+    summary="Current state of the inference model",
+)
+async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
+    """Return whether the shape model is loaded and where the load is.
+
+    ``loaded`` flips to ``true`` once ``ModelWorker.generate`` has
+    materialised the shape pipeline (which is what
+    ``POST /v1/models/load`` triggers eagerly).
+    """
+
+    worker = manager.worker
+    model_path = (
+        manager.inference_service.model_path
+        if manager.inference_service is not None
+        else manager.model_path
+    )
+    subfolder = (
+        manager.inference_service.model_subfolder
+        if manager.inference_service is not None
+        else manager.model_subfolder
+    )
+    device = (
+        manager.inference_service.device
+        if manager.inference_service is not None
+        else manager.device
+    )
+    pipeline = getattr(worker, "pipeline", None) if worker is not None else None
+    last_error = manager.last_error
+    if manager.inference_service is not None:
+        last_error = manager.inference_service.last_error or last_error
+    return ModelStatusResponse(
+        loaded=pipeline is not None,
+        loading=False,  # reserved for future streaming progress
+        model=model_path,
+        subfolder=subfolder,
+        device=device,
+        last_error=last_error,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,14 +476,6 @@ async def cancel_job(uid: str, manager: ManagerDep) -> dict:
 # ---------------------------------------------------------------------------
 # Signed file URLs
 # ---------------------------------------------------------------------------
-
-
-class SignedFileResponse(BaseModel):
-    """Response schema for the signed-URL endpoint."""
-
-    url: str
-    expires_at: int
-    ttl_seconds: int
 
 
 @router.get(

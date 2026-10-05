@@ -378,6 +378,87 @@ class PriorityRequestManager:
     def get_job(self, uid: str) -> JobResponse | None:
         return self.jobs.get(uid)
 
+    def warmup_model(self) -> str:
+        """Eagerly load the inference model.
+
+        Returns one of:
+          - ``"already_loaded"`` when ``ModelWorker.pipeline`` is set.
+          - ``"loading"`` when a new load was scheduled.
+          - ``"queued"`` when no service is configured (the embedded
+            path will lazy-load on the next job submission).
+
+        The actual download + weight load runs in a worker thread;
+        this method only schedules it. Callers can poll
+        ``/v1/models/status`` or just submit a job once the model is
+        ready.
+        """
+        worker = self.worker
+        if worker is not None and getattr(worker, "pipeline", None) is not None:
+            return "already_loaded"
+
+        async def _trigger() -> None:
+            """Build a ModelWorker so weights are downloaded + loaded.
+
+            We do this in a thread via ``asyncio.to_thread`` so the
+            event loop stays responsive during the (potentially
+            long) HF download. Errors are recorded on
+            ``manager.last_error`` so the UI can surface them via
+            ``/v1/models/status``.
+            """
+            from hy3dgen.inference import ModelWorker
+
+            try:
+                self.worker = await asyncio.to_thread(
+                    ModelWorker,
+                    device=self.device,
+                    model_path=self.model_path,
+                    subfolder=self.model_subfolder,
+                    multiview_model_path=self.multiview_model,
+                    multiview_subfolder=self.multiview_subfolder,
+                    enable_tex=True,
+                    enable_t2i=True,
+                )
+            except Exception as exc:
+                self.last_error = f"warmup failed: {exc}"
+                logger.exception("warmup_model failed")
+
+        # Schedule without blocking. The caller gets an immediate
+        # ``"loading"`` status; the actual download happens on the
+        # event loop. If we don't have a running loop (e.g. called
+        # from a sync test), fall back to a thread.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop — most likely a test fixture. The caller can
+            # poll the manager.worker attribute later.
+            import threading
+
+            def _runner() -> None:
+                from hy3dgen.inference import ModelWorker
+
+                try:
+                    self.worker = ModelWorker(
+                        device=self.device,
+                        model_path=self.model_path,
+                        subfolder=self.model_subfolder,
+                        multiview_model_path=self.multiview_model,
+                        multiview_subfolder=self.multiview_subfolder,
+                        enable_tex=True,
+                        enable_t2i=True,
+                    )
+                except Exception as exc:
+                    self.last_error = f"warmup failed: {exc}"
+
+            threading.Thread(target=_runner, daemon=True).start()
+            return "queued"
+
+        task = loop.create_task(_trigger())
+        # Keep a strong reference so the task isn't garbage-collected
+        # mid-flight; the manager already has a _persist_tasks bag
+        # for the same pattern.
+        self._track_persist_task(task)
+        return "loading"
+
     def set_stage(self, uid: str, stage: str, progress: float | None = None) -> None:
         """Update the stage label and progress for a running job.
 
