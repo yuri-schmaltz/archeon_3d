@@ -2,9 +2,11 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -239,6 +241,57 @@ app.mount("/files", _AuthStaticFiles(directory=SAVE_DIR), name="files")
 # /health is already registered above; FastAPI dependencies apply per-route.
 # The router endpoints protect themselves with ``require_api_key``.
 app.include_router(router, dependencies=[Depends(require_api_key)])
+
+
+# Serve the compiled frontend (Vite ``dist/``) at the root URL so
+# ``http://127.0.0.1:8081/`` is the actual UI, not a JSON 404.
+#
+# IMPORTANT: this block runs *after* ``app.include_router(router)``
+# so the API routes are matched first. A catch-all registered before
+# the API would shadow ``/v1/*`` and return 404 instead of routing
+# the request to the API.
+#
+# The dist is optional: if the project was checked out without
+# running ``npm run build`` we silently skip the mount and let the
+# user get a useful JSON 404. The launcher always builds the
+# frontend, so this only affects exotic deployments.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "archeon_frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
+    async def _serve_index() -> FileResponse:
+        """Serve the Vite ``index.html`` for the document root."""
+        return FileResponse(_FRONTEND_DIST / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _serve_spa(full_path: str) -> Response:
+        """Serve any non-API, non-asset path as a static file.
+
+        This is the hash-router fallback: a refresh on
+        ``/biblioteca`` would otherwise 404 because FastAPI has no
+        route for it. We try the file system first (so direct asset
+        hits like ``/favicon.svg`` work) and fall back to
+        ``index.html`` so the SPA can take over.
+        """
+        # Path-traversal guard: only serve files inside dist/.
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        try:
+            candidate.relative_to(_FRONTEND_DIST.resolve())
+        except ValueError:
+            return Response(status_code=404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")
+else:
+    logger.info(
+        "Frontend dist/ not found at %s; root URL will return 404. "
+        "Run 'cd archeon_frontend && npm run build' to enable the UI.",
+        _FRONTEND_DIST,
+    )
 
 
 def main():

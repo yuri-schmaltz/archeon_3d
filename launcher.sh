@@ -13,7 +13,9 @@
 #      ``archeon_frontend/dist/`` is missing or older than its
 #      sources.
 #   5. Boots the Archeon API on ``http://127.0.0.1:8081`` (override
-#      via ``ARCHEON_PORT`` / ``ARCHEON_HOST`` env vars).
+#      via ``ARCHEON_PORT`` / ``ARCHEON_HOST`` env vars). The Vite
+#      ``dist/`` is served at the same URL so the browser shows the
+#      Archeon UI without a separate dev server.
 #
 # Re-runs are cheap: subsequent invocations only reinstall if the
 # dependency manifest (pyproject.toml / requirements.txt / package.json)
@@ -27,9 +29,36 @@
 #   ARCHEON_NO_ML       skip the [ml] extra (default: unset)
 #   ARCHEON_NO_FRONTEND skip the npm build (default: unset)
 #   ARCHEON_FORCE_REINSTALL touch the stamp to force reinstall
+#   ARCHEON_UI=1        run the legacy Gradio ``launcher.py`` instead
+#                        of the API server (useful for users coming
+#                        from the old setup)
+#
+# Flags (alternative to env vars):
+#   --ui                same as ARCHEON_UI=1 (legacy Gradio launcher)
+#   --no-ml             same as ARCHEON_NO_ML=1
+#   --no-frontend       same as ARCHEON_NO_FRONTEND=1
+#   --reinstall         same as ARCHEON_FORCE_REINSTALL=1
+#   --help              show this help text and exit
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
+
+# --- argument parsing ---------------------------------------------------------
+show_help() {
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) show_help ;;
+        --ui)       ARCHEON_UI=1 ;;
+        --no-ml)    ARCHEON_NO_ML=1 ;;
+        --no-frontend) ARCHEON_NO_FRONTEND=1 ;;
+        --reinstall) ARCHEON_FORCE_REINSTALL=1 ;;
+        *) die "Unknown argument: $arg (try --help)";;
+    esac
+done
 
 # --- paths --------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -223,7 +252,25 @@ fi
 # Final stamp update so we don't reinstall on every invocation.
 touch "$STAMP_FILE"
 
-# --- 6. launch the API --------------------------------------------------------
+# --- 6. choose what to run ---------------------------------------------------
+# Default: start the FastAPI server (which now also serves the
+# compiled frontend at /). Setting ARCHEON_UI=1 (or --ui) starts
+# the legacy Gradio launcher instead, for users coming from the old
+# setup.
+LAUNCHER_PY="$SCRIPT_DIR/launcher.py"
+
+if [[ "${ARCHEON_UI:-}" == "1" && -f "$LAUNCHER_PY" ]]; then
+    # Honour SIGINT / SIGTERM for graceful shutdown.
+    trap 'log "Caught signal — shutting down."; kill -TERM "$LAUNCHER_PID" 2>/dev/null || true; wait "$LAUNCHER_PID" 2>/dev/null || true; exit 0' INT TERM
+
+    log "Starting legacy Gradio launcher (python launcher.py)…"
+    log "Open the URL it prints (default http://127.0.0.1:7860) in your browser."
+
+    PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        "$VENV_DIR/bin/python" "$LAUNCHER_PY" 2>&1 | tee "$LOG_DIR/launcher.log"
+    exit $?
+fi
+
 ARCHEON_HOST="${ARCHEON_HOST:-127.0.0.1}"
 ARCHEON_PORT="${ARCHEON_PORT:-8081}"
 export ARCHEON_HOST
@@ -239,6 +286,7 @@ fi
 trap 'log "Caught signal — shutting down."; kill -TERM "$API_PID" 2>/dev/null || true; wait "$API_PID" 2>/dev/null || true; exit 0' INT TERM
 
 log "Starting Archeon API on http://$ARCHEON_HOST:$ARCHEON_PORT"
+log "Open http://$ARCHEON_HOST:$ARCHEON_PORT/ in your browser for the Archeon UI."
 log "Logs: tail -f $LOG_DIR/api.log"
 
 # Run uvicorn directly from the venv so re-installs are picked up immediately.
@@ -253,7 +301,7 @@ API_PID=$!
 # Brief readiness probe so users see a clear OK / ERROR before exiting.
 for _ in {1..40}; do
     if curl -fsS "http://${ARCHEON_HOST}:${ARCHEON_PORT}/health" >/dev/null 2>&1; then
-        log "API ready (pid $API_PID)."
+        log "API ready (pid $API_PID). Frontend served at http://$ARCHEON_HOST:$ARCHEON_PORT/"
         break
     fi
     if ! kill -0 "$API_PID" 2>/dev/null; then
