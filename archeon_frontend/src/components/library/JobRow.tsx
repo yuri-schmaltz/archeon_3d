@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { JobResponse } from '../../api/types';
 import { Text, Stack, StatusDot, type StatusKind, Pill } from '../../design/primitives';
 
@@ -28,6 +28,66 @@ function formatAge(iso: string | undefined): string {
     if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
     return `${Math.floor(ms / 86_400_000)}d`;
 }
+
+/**
+ * Renders a job's error message without burying the row in 20+ lines
+ * of traceback. The first line (or first 240 chars) is shown
+ * collapsed; clicking the chevron reveals the full text.
+ *
+ * Why we don't truncate blindly: real failures can be a long
+ * diffusers / transformers incompatibility string, but the
+ * actionable line is usually right at the top (e.g.
+ * ``ModuleNotFoundError: No module named 'diffusers'``). Surfacing
+ * the first line + a "show more" link is the best compromise.
+ */
+const ErrorLine: React.FC<{ error: string }> = ({ error }) => {
+    const [open, setOpen] = useState(false);
+    const firstLine = error.split('\n', 1)[0].trim();
+    // If the error is a single short line just show it. Otherwise
+    // collapse to the first line + a disclosure.
+    const isLong = error.length > 240 || error.includes('\n');
+    if (!isLong) {
+        return (
+            <Text voice="mono" size="2xs" tone="danger" className="break-words">
+                {error}
+            </Text>
+        );
+    }
+    return (
+        <div
+            className="space-y-1"
+            // The outer row is a <button> that opens the drawer; without
+            // stopping propagation the inner disclosure would also
+            // trigger the drawer when the user is just trying to read
+            // the full error.
+            onClick={(event) => event.stopPropagation()}
+        >
+            <Text voice="mono" size="2xs" tone="danger" className="break-words">
+                {firstLine}
+            </Text>
+            {open ? (
+                <Text
+                    voice="mono"
+                    size="2xs"
+                    tone="dim"
+                    className="break-words whitespace-pre-wrap max-h-48 overflow-y-auto border border-border rounded p-2 bg-surface-1/40"
+                >
+                    {error}
+                </Text>
+            ) : null}
+            <button
+                type="button"
+                onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen((v) => !v);
+                }}
+                className="font-mono text-2xs uppercase tracking-wider text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+            >
+                {open ? '▾ Ocultar detalhes' : '▸ Mostrar detalhes'}
+            </button>
+        </div>
+    );
+};
 
 export const JobRow: React.FC<JobRowProps> = ({ job, statusKind, onOpen, onReuse, t }) => {
     return (
@@ -83,11 +143,7 @@ export const JobRow: React.FC<JobRowProps> = ({ job, statusKind, onOpen, onReuse
                             </>
                         )}
                     </Stack>
-                    {job.error && (
-                        <Text voice="mono" size="2xs" tone="danger">
-                            {job.error}
-                        </Text>
-                    )}
+                    {job.error && <ErrorLine error={job.error} />}
                 </Stack>
             </button>
             <Stack direction="row" gap={2} align="center">
