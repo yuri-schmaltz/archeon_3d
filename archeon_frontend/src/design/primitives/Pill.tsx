@@ -7,7 +7,7 @@
 import React from "react";
 import { clsx } from "clsx";
 
-type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
+type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
 const toneClass: Record<Tone, string> = {
   neutral: "text-fg-muted border-border-strong",
@@ -16,6 +16,7 @@ const toneClass: Record<Tone, string> = {
   warning: "text-warning border-warning/40",
   danger: "text-danger border-danger/40",
   info: "text-fg-muted border-border",
+  muted: "text-fg-muted border-border",
 };
 
 export interface PillProps {

@@ -51,6 +51,7 @@ export interface TextProps {
   uppercase?: boolean;
   as?: keyof React.JSX.IntrinsicElements;
   className?: string;
+  id?: string;
   children: React.ReactNode;
 }
 
@@ -70,9 +71,11 @@ export const Text: React.FC<TextProps> = ({
   uppercase = false,
   as: As = "span",
   className,
+  id,
   children,
 }) => (
   <As
+    id={id}
     className={clsx(
       voiceClass[voice],
       sizeClass[size],

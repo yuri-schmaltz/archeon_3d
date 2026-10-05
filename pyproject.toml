@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hy3dgen"
-version = "2.1.0-archeon7"
+dynamic = ["version"]
 description = "Hunyuan3D 2.0 with the Archeon API, frontend, persistence, and real-time streaming layer."
 readme = "ARCHEON_README.md"
 license = { file = "LICENSE" }
@@ -48,6 +48,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "prometheus-client>=0.20",
     "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
     "aiosqlite>=0.20",
 ]
 
@@ -63,13 +64,16 @@ ml = [
     "omegaconf",
     "diso",
     "tqdm",
-    "trimesh",
+    "trimesh>=4",
+    "Pillow",
+    "fast-simplification",
     "pymeshlab",
     "pygltflib",
     "xatlas",
     "rembg",
     "onnxruntime",
-    "mmgp==3.2.7",
+    "mmgp>=3.5.0,<3.8",
+    "accelerate",
     "gradio",
     "gradio_litmodel3d",
     "ninja",
@@ -80,11 +84,19 @@ dev = [
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "httpx",
+    "pytest-timeout>=2.3",
+    "ruff>=0.9",
+    "Pillow",
+    "trimesh>=4",
+    "fast-simplification",
 ]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx",
+    "pytest-timeout>=2.3",
+    "Pillow",
+    "trimesh>=4",
 ]
 
 [project.urls]
@@ -204,13 +216,13 @@ markers = [
 # setuptools package config
 # ---------------------------------------------------------------------------
 [tool.setuptools]
-packages = [
-    "hy3dgen",
-    "hy3dgen.api",
-    "hy3dgen.meshops",
-]
+py-modules = ["launcher", "blender_addon"]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "hy3dgen.version.__version__"}
 
 [tool.setuptools.package-data]
 "hy3dgen" = ["py.typed", "*.pyi"]
 "hy3dgen.api" = ["*.yaml", "*.json"]
+"*" = ["*.cpp", "*.cu", "*.h"]

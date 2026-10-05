@@ -10,6 +10,7 @@ HTTP request metrics, but the job lifecycle (queued/processing/
 completed/failed) is the interesting signal and that's easier to
 track by hand.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -110,12 +111,10 @@ __all__ = [
 try:
     from opentelemetry import trace
     from opentelemetry.trace import Status, StatusCode
+
     _HAS_OTEL = True
 except ImportError:
     _HAS_OTEL = False
-    trace = None
-    Status = None
-    StatusCode = None
 
 
 def _otel_enabled() -> bool:
@@ -123,6 +122,7 @@ def _otel_enabled() -> bool:
     if not _HAS_OTEL:
         return False
     import os
+
     return os.environ.get("ARCHEON_OTEL_ENABLED", "").lower() in ("1", "true", "yes")
 
 
@@ -132,7 +132,7 @@ def start_span(name: str, **attrs: object):
     The return value is safe to use in a ``with`` statement regardless of
     whether OTel is installed.
     """
-    if not _otel_enabled() or trace is None:
+    if not _otel_enabled():
         return _NoopSpan()
     tracer = trace.get_tracer("hy3dgen.api")
     span = tracer.start_span(name, attributes=dict(attrs))
@@ -146,8 +146,9 @@ def end_span(span: object, *, error: BaseException | None = None) -> None:
     # `span` is a real OTel span at this point. We use ``cast`` because
     # the type is `object` (could be a no-op or a Span depending on env).
     from typing import cast
+
     real_span = cast("Any", span)
-    if _HAS_OTEL and Status is not None and StatusCode is not None and error is not None:
+    if _HAS_OTEL and error is not None:
         real_span.set_status(Status(StatusCode.ERROR, str(error)))
         real_span.record_exception(error)
     real_span.end()
@@ -155,9 +156,13 @@ def end_span(span: object, *, error: BaseException | None = None) -> None:
 
 class _NoopSpan:
     """Stand-in for OTel's ``Span`` when tracing is disabled."""
+
     def set_attribute(self, *_args: object, **_kwargs: object) -> None: ...
     def set_status(self, *_args: object, **_kwargs: object) -> None: ...
     def record_exception(self, *_args: object, **_kwargs: object) -> None: ...
     def end(self) -> None: ...
-    def __enter__(self) -> _NoopSpan: return self
-    def __exit__(self, *_args: object) -> None: return
+    def __enter__(self) -> _NoopSpan:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return

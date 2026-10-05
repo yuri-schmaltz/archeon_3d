@@ -58,6 +58,8 @@ export interface JobResponse {
     error?: string;
     file_path?: string;
     request_type?: JobType;
+    stage?: string | null;
+    stage_progress?: number | null;
 }
 
 /**

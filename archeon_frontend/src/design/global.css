@@ -126,3 +126,13 @@ body::after {
     transition-duration: 0.01ms !important;
   }
 }
+
+:where(button, a, summary, input, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+label:has(input.sr-only:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}

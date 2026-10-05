@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,12 +19,14 @@ from hy3dgen.api.config import (
     get_bind_port,
     get_cors_origins,
     get_job_db_path,
+    settings,
 )
 from hy3dgen.api.manager import PriorityRequestManager
 from hy3dgen.api.metrics import render_metrics
 from hy3dgen.api.persistence import JobStore
 from hy3dgen.api.routes import router
 from hy3dgen.meshops.processor import MeshProcessor
+from hy3dgen.version import __version__
 
 logger = logging.getLogger("hy3dgen.api.server")
 
@@ -43,15 +46,25 @@ async def lifespan(app: FastAPI):
     # ``start()`` rehydrates from the store before kicking off the
     # processing task, so jobs that were mid-flight when the process
     # died are recovered.
-    app.state.manager = PriorityRequestManager(store=store)
+    app.state.manager = PriorityRequestManager(
+        device=settings.device,
+        max_history=settings.max_history,
+        max_age_seconds=settings.max_age_seconds,
+        model_path=settings.model,
+        model_subfolder=settings.model_subfolder,
+        multiview_model=settings.multiview_model,
+        multiview_subfolder=settings.multiview_subfolder,
+        store=store,
+    )
     await app.state.manager.start()
 
     # Initialize processor
     app.state.mesh_processor = MeshProcessor()
 
-    yield
-    # Cleanup
-    await app.state.manager.stop()
+    try:
+        yield
+    finally:
+        await app.state.manager.stop()
 
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
@@ -59,7 +72,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 app = FastAPI(
     title="Archeon 3D Backend",
     description="High-performance local 3D generation backend with priority queuing and polymorphic API.",
-    version="1.0.1",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -68,10 +81,9 @@ app = FastAPI(
 # ARCHEON_CORS_ORIGINS to a comma-separated allow-list and optionally
 # ARCHEON_ALLOW_CREDENTIALS=true.
 _cors_origins = get_cors_origins()
-_cors_allow_credentials = (
-    os.environ.get('ARCHEON_ALLOW_CREDENTIALS', 'false').lower() == 'true'
-    and _cors_origins != ['*']
-)
+_cors_allow_credentials = os.environ.get(
+    "ARCHEON_ALLOW_CREDENTIALS", "false"
+).lower() == "true" and _cors_origins != ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -79,6 +91,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # /health stays unauthenticated so load balancers / the launcher can probe it
 # without needing the API key.
@@ -101,6 +114,7 @@ async def health_check():
     - ``capabilities``: feature flags (SSE endpoints live, etc.).
     """
     import time
+
     manager = getattr(app.state, "manager", None)
     queue_size = manager.queue.qsize() if manager is not None else 0
     last_error = getattr(manager, "last_error", None) if manager is not None else None
@@ -129,9 +143,11 @@ async def health_check():
         },
     }
 
+
 # Make the limiter reachable from request handlers.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics_endpoint() -> Response:
@@ -139,7 +155,59 @@ async def metrics_endpoint() -> Response:
     (it's an ops endpoint, not part of the public API contract)."""
     return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
-app.mount("/files", StaticFiles(directory=SAVE_DIR), name="files")
+
+# Body size limit: bail out early if a request advertises a Content-Length
+# over the configured cap. Without this guard nginx (or the default uvicorn
+# limit) would buffer an unbounded payload into a temp file before we
+# even see the request, wasting resources and giving us a worse error
+# message to surface.
+_MAX_BODY_BYTES = 64 * 1024 * 1024  # 64 MiB matches the nginx setting
+
+
+@app.middleware("http")
+async def _enforce_body_size(request, call_next):
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_BODY_BYTES:
+                return Response(
+                    content=f"Request body too large (>{_MAX_BODY_BYTES} bytes).",
+                    status_code=413,
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
+
+
+class _AuthStaticFiles(StaticFiles):
+    """StaticFiles subclass that enforces ``X-API-Key`` when auth is configured.
+
+    The default ``StaticFiles`` mount doesn't go through the FastAPI
+    dependency tree, so we wrap ``get_response`` to validate the key
+    ourselves. When ``ARCHEON_API_KEY`` is empty the check is a no-op
+    (local dev).
+    """
+
+    async def get_response(self, path, scope):
+        if _auth_module.get_api_key() is not None:
+            # Headers arrive as raw bytes in the ASGI scope.
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in scope.get("headers", [])
+            }
+            provided = headers.get("x-api-key", "")
+            if not provided:
+                return Response(
+                    content="Missing X-API-Key header.",
+                    status_code=401,
+                    headers={"WWW-Authenticate": "ApiKey"},
+                )
+            if not hmac.compare_digest(provided, _auth_module.get_api_key() or ""):
+                return Response(content="Invalid API key.", status_code=403)
+        return await super().get_response(path, scope)
+
+
+app.mount("/files", _AuthStaticFiles(directory=SAVE_DIR), name="files")
 
 # Apply API-key auth to everything else (the routes registered below).
 # /health is already registered above; FastAPI dependencies apply per-route.
@@ -156,17 +224,24 @@ def main():
     import argparse
 
     import uvicorn
+
     parser = argparse.ArgumentParser(description="Archeon 3D Backend API server")
     parser.add_argument(
-        "--port", type=int, default=get_bind_port(),
+        "--port",
+        type=int,
+        default=get_bind_port(),
         help="Port to listen on (overrides ARCHEON_PORT, default 8081).",
     )
     parser.add_argument(
-        "--host", type=str, default=get_bind_host(),
+        "--host",
+        type=str,
+        default=get_bind_host(),
         help="Bind host (overrides ARCHEON_HOST, default 127.0.0.1).",
     )
     parser.add_argument(
-        "--workers", type=int, default=1,
+        "--workers",
+        type=int,
+        default=1,
         help="Number of uvicorn workers. Use >1 only if the model is loaded lazily per worker.",
     )
     args = parser.parse_args()

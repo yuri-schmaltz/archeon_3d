@@ -1,18 +1,19 @@
 import os
+import sys
 import time
+
 import psutil
-try:
-    import torch
-except ImportError:
-    torch = None
 
 _start_time = time.time()
+_process = psutil.Process(os.getpid())
+
 
 def get_system_metrics():
     """Get system metrics including uptime, memory, and GPU usage."""
-    process = psutil.Process(os.getpid())
+    process = _process
+    torch = sys.modules.get("torch")
     mem_info = process.memory_info()
-    
+
     metrics = {
         "uptime_seconds": round(time.time() - _start_time, 1),
         "process": {
@@ -24,7 +25,7 @@ def get_system_metrics():
         },
         "gpu": {},
     }
-    
+
     if torch and torch.cuda.is_available():
         try:
             device = torch.cuda.current_device()
@@ -37,5 +38,5 @@ def get_system_metrics():
             }
         except Exception:
             pass
-            
+
     return metrics

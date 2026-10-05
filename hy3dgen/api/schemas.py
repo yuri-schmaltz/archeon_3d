@@ -11,6 +11,7 @@ class JobStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+
 class MeshOpsAction(str, Enum):
     DECIMATE = "decimate"
     CONVERT = "convert"
@@ -18,46 +19,62 @@ class MeshOpsAction(str, Enum):
 
 class BaseGenerationRequest(BaseModel):
     """Common parameters for all generation types."""
+
     seed: int = Field(1234, description="Random seed", examples=[1234])
     steps: int = Field(50, ge=1, le=100, description="Denoising steps", examples=[50, 5])
     guidance: float = Field(5.0, ge=1.0, le=20.0, description="Guidance scale", examples=[5.0, 7.5])
     octree_resolution: int = Field(
-        256, ge=16, le=512, description="Voxel resolution", examples=[256, 384],
+        256,
+        ge=16,
+        le=512,
+        description="Voxel resolution",
+        examples=[256, 384],
     )
-    format: Literal['glb', 'obj', 'ply', 'stl'] = Field(
-        'glb', description="Output mesh format", examples=['glb'],
+    format: Literal["glb", "obj", "ply", "stl"] = Field(
+        "glb",
+        description="Output mesh format",
+        examples=["glb"],
     )
     texture: bool = Field(False, description="Generate texture?", examples=[False, True])
     face_count: int = Field(
-        40000, ge=100, le=1000000,
-        description="Target face count for reduction", examples=[40000],
+        40000,
+        ge=100,
+        le=1000000,
+        description="Target face count for reduction",
+        examples=[40000],
     )
 
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
 
 class TextTo3DRequest(BaseGenerationRequest):
-    type: Literal['text_to_3d'] = 'text_to_3d'
+    type: Literal["text_to_3d"] = "text_to_3d"
     prompt: str = Field(
-        ..., min_length=1, description="Text prompt",
+        ...,
+        min_length=1,
+        description="Text prompt",
         examples=["a cute cat with white fur"],
     )
 
 
 class ImageTo3DRequest(BaseGenerationRequest):
-    type: Literal['image_to_3d'] = 'image_to_3d'
+    type: Literal["image_to_3d"] = "image_to_3d"
     image: str = Field(
         ...,
         description="Base64 encoded image (optionally with a `data:image/...;base64,` prefix)",
-        examples=["iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="],
+        examples=[
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        ],
     )
     remove_background: bool = Field(
-        True, description="Remove background using rembg?", examples=[True],
+        True,
+        description="Remove background using rembg?",
+        examples=[True],
     )
 
 
 class MultiviewRequest(BaseGenerationRequest):
-    type: Literal['multiview'] = 'multiview'
+    type: Literal["multiview"] = "multiview"
     front: str = Field(..., description="Front view base64", examples=["<base64 png>"])
     back: str = Field(..., description="Back view base64", examples=["<base64 png>"])
     left: str = Field(..., description="Left view base64", examples=["<base64 png>"])
@@ -72,7 +89,8 @@ class TextureMeshRequest(BaseGenerationRequest):
     or ``prompt`` must be provided. ``texture`` is implicitly true for this job
     type and is forced to True by the manager before dispatch.
     """
-    type: Literal['texture_mesh'] = 'texture_mesh'
+
+    type: Literal["texture_mesh"] = "texture_mesh"
     mesh: str = Field(..., description="Base64-encoded GLB of the mesh to re-texture")
     image: str | None = Field(
         None, description="Optional base64 image used as the texture reference"
@@ -89,7 +107,7 @@ class TextureMeshRequest(BaseGenerationRequest):
 # Discriminated Union for polymorphic handling
 JobRequest = Annotated[
     TextTo3DRequest | ImageTo3DRequest | MultiviewRequest | TextureMeshRequest,
-    Field(discriminator='type'),
+    Field(discriminator="type"),
 ]
 
 
@@ -100,6 +118,15 @@ class JobResponse(BaseModel):
     completed_at: str | None = None
     error: str | None = None
     file_path: str | None = None
+    updated_at: str | None = None
+    request_type: str | None = None
+    # Stage progress (PR for Fase 2): the inference worker can emit
+    # intermediate states so the UI can render a meaningful progress bar
+    # instead of just "queued"/"processing". ``stage`` is a short label
+    # (e.g. "loading_model", "shape_generation", "texturing",
+    # "exporting"); ``stage_progress`` is a float in [0, 1].
+    stage: str | None = None
+    stage_progress: float | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -110,10 +137,22 @@ class ErrorResponse(BaseModel):
 
 
 class MeshOpsRequest(BaseModel):
-    job_uid: str = Field(..., description="UID of the source job to operate on", examples=["abc-123"])
-    action: MeshOpsAction = Field(..., description="Mesh operation to apply", examples=[MeshOpsAction.DECIMATE])
-    format: str = Field('glb', description="Output mesh format", examples=['glb'])
-    ratio: float = Field(0.5, ge=0.01, le=1.0, description="For decimate: target ratio of faces to keep", examples=[0.5, 0.25])
+    job_uid: str = Field(
+        ..., description="UID of the source job to operate on", examples=["abc-123"]
+    )
+    action: MeshOpsAction = Field(
+        ..., description="Mesh operation to apply", examples=[MeshOpsAction.DECIMATE]
+    )
+    format: Literal["glb", "obj", "ply", "stl"] = Field(
+        "glb", description="Output mesh format", examples=["glb"]
+    )
+    ratio: float = Field(
+        0.5,
+        ge=0.01,
+        le=1.0,
+        description="For decimate: target ratio of faces to keep",
+        examples=[0.5, 0.25],
+    )
     model_config = ConfigDict(use_enum_values=True)
 
 
@@ -121,9 +160,11 @@ class MeshOpsRequest(BaseModel):
 # Unified generation request (PR #7)
 # ---------------------------------------------------------------------------
 
+
 class _MultiviewViews(BaseModel):
     """The 4 base64-encoded views used by multiview generation."""
-    model_config = ConfigDict(extra='forbid')
+
+    model_config = ConfigDict(extra="forbid")
 
     front: str = Field(..., description="Front view base64 PNG")
     back: str = Field(..., description="Back view base64 PNG")
@@ -150,21 +191,26 @@ class GenerationRequest(BaseModel):
     ``text_to_3d`` and ``image_to_3d``; for ``texture_mesh`` it is
     forced to True.
     """
-    model_config = ConfigDict(extra='forbid')
+
+    model_config = ConfigDict(extra="forbid")
 
     # --- Inputs (any combination, validated below) -------------------
     text: str | None = Field(
-        None, description="Text prompt or guidance. Required for text_to_3d.",
+        None,
+        description="Text prompt or guidance. Required for text_to_3d.",
         examples=["a small red cube"],
     )
     image: str | None = Field(
-        None, description="Base64-encoded image (single view, used by image_to_3d).",
+        None,
+        description="Base64-encoded image (single view, used by image_to_3d).",
     )
     views: _MultiviewViews | None = Field(
-        None, description="Four base64-encoded views (front/back/left/right).",
+        None,
+        description="Four base64-encoded views (front/back/left/right).",
     )
     mesh: str | None = Field(
-        None, description="Base64-encoded GLB to re-texture (texture_mesh).",
+        None,
+        description="Base64-encoded GLB to re-texture (texture_mesh).",
     )
 
     # --- Common generation parameters -------------------------------
@@ -172,19 +218,28 @@ class GenerationRequest(BaseModel):
     steps: int = Field(50, ge=1, le=100, description="Denoising steps", examples=[50])
     guidance: float = Field(5.0, ge=1.0, le=20.0, description="Guidance scale")
     octree_resolution: int = Field(
-        256, ge=16, le=512, description="Voxel resolution",
+        256,
+        ge=16,
+        le=512,
+        description="Voxel resolution",
     )
-    format: Literal['glb', 'obj', 'ply', 'stl'] = Field(
-        'glb', description="Output mesh format",
+    format: Literal["glb", "obj", "ply", "stl"] = Field(
+        "glb",
+        description="Output mesh format",
     )
     texture: bool = Field(
-        False, description="Generate texture? (Honoured for text_to_3d / image_to_3d; forced on for texture_mesh.)",
+        False,
+        description="Generate texture? (Honoured for text_to_3d / image_to_3d; forced on for texture_mesh.)",
     )
     face_count: int = Field(
-        40000, ge=100, le=1_000_000, description="Target face count for reduction",
+        40000,
+        ge=100,
+        le=1_000_000,
+        description="Target face count for reduction",
     )
     remove_background: bool = Field(
-        True, description="Remove background using rembg? (image_to_3d only.)",
+        True,
+        description="Remove background using rembg? (image_to_3d only.)",
     )
 
     # --- Validation -------------------------------------------------
@@ -192,9 +247,7 @@ class GenerationRequest(BaseModel):
     @model_validator(mode="after")
     def _check_inputs(self) -> "GenerationRequest":
         if not any([self.text, self.image, self.views, self.mesh]):
-            raise ValueError(
-                "At least one of `text`, `image`, `views`, `mesh` must be provided."
-            )
+            raise ValueError("At least one of `text`, `image`, `views`, `mesh` must be provided.")
         if self.views is not None and not all(
             [self.views.front, self.views.back, self.views.left, self.views.right]
         ):
@@ -238,14 +291,18 @@ class GenerationRequest(BaseModel):
         ``type`` discriminator.
         """
         from typing import Any, cast
-        common = cast("dict[str, Any]", {
-            "seed": self.seed,
-            "steps": self.steps,
-            "guidance": self.guidance,
-            "octree_resolution": self.octree_resolution,
-            "format": self.format,
-            "face_count": self.face_count,
-        })
+
+        common = cast(
+            "dict[str, Any]",
+            {
+                "seed": self.seed,
+                "steps": self.steps,
+                "guidance": self.guidance,
+                "octree_resolution": self.octree_resolution,
+                "format": self.format,
+                "face_count": self.face_count,
+            },
+        )
         mode = self.infer_mode()
         if mode == "texture_mesh":
             assert self.mesh is not None  # guaranteed by validator
@@ -264,6 +321,7 @@ class GenerationRequest(BaseModel):
                 back=self.views.back,
                 left=self.views.left,
                 right=self.views.right,
+                texture=self.texture,
                 **common,
             )
         if mode == "image_to_3d":
@@ -284,3 +342,85 @@ class GenerationRequest(BaseModel):
             **common,
         )
 
+
+# ---------------------------------------------------------------------------
+# Capabilities (PR for Fase 2)
+# ---------------------------------------------------------------------------
+
+
+class ModeCapability(BaseModel):
+    """Whether a generation mode is currently usable.
+
+    ``available`` reflects both the loaded model and the configured
+    environment. ``reason`` is a short human-readable string used by
+    the UI to explain why a tab is disabled; it should be ``None``
+    when ``available`` is True.
+    """
+
+    available: bool
+    reason: str | None = None
+    requires: list[str] = Field(
+        default_factory=list,
+        description="Optional list of capability flags this mode depends on (e.g. 'text_to_image').",
+    )
+
+
+class ModelInfo(BaseModel):
+    """Model identifier for the UI."""
+
+    id: str
+    subfolder: str | None = None
+    loaded: bool = Field(
+        description="True if the model is currently in memory.",
+    )
+
+
+class PresetInfo(BaseModel):
+    """Named parameter preset exposed to the UI."""
+
+    steps: int
+    guidance: float
+    octree_resolution: int
+
+
+class CapabilityLimits(BaseModel):
+    """Server-side limits surfaced to the client.
+
+    The frontend uses these to size client-side validation and to
+    show informative error messages before submitting.
+    """
+
+    image_bytes: int
+    mesh_bytes: int
+    queue_depth: int
+    body_bytes: int
+
+
+class CapabilitiesResponse(BaseModel):
+    """Static + dynamic capabilities advertised by the API.
+
+    Returned from ``GET /v1/capabilities``. The frontend uses this
+    to gate tabs, preselect presets, and size uploads.
+    """
+
+    modes: dict[str, ModeCapability]
+    models: dict[str, ModelInfo]
+    presets: dict[str, PresetInfo]
+    limits: CapabilityLimits
+    version: str
+
+
+class LibraryResponse(BaseModel):
+    """Paginated library view returned by ``GET /v1/library``.
+
+    The frontend renders ``items`` directly and uses ``total`` for
+    pagination UI (``page_size`` is fixed for now; ``page`` is
+    1-indexed). ``has_more`` is a convenience flag so the UI can
+    hide a "next" button without recomputing.
+    """
+
+    items: list[JobResponse]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool

@@ -12,9 +12,9 @@ import { Text, Divider, StatusDot } from "../design/primitives";
 import { useJobEvents } from "../context/useJobEvents";
 
 export const PageHeader: React.FC = () => {
-  const { connected } = useJobEvents();
+  const { connected, isFallback } = useJobEvents();
   return (
-    <header className="h-14 border-b border-border bg-bg/80 backdrop-blur-sm flex items-center px-6 z-(--z-header)">
+    <header className="h-14 shrink-0 border-b border-border bg-bg/80 backdrop-blur-sm flex items-center px-5 sm:px-6 gap-3 z-(--z-header)">
       <div className="flex items-baseline gap-3">
         <Text voice="display" size="xl" tracking="tight">
           Archeon
@@ -23,11 +23,12 @@ export const PageHeader: React.FC = () => {
           ·3D
         </Text>
       </div>
-      <div className="ml-8 flex items-center gap-2">
+      <div className="hidden md:flex ml-8 items-center gap-2">
         <Text
           voice="mono"
           size="2xs"
           tone="dim"
+          className="hidden sm:block"
           tracking="widest"
           uppercase
         >
@@ -35,7 +36,7 @@ export const PageHeader: React.FC = () => {
         </Text>
       </div>
       <div className="flex-1" />
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 shrink-0">
         <StatusDot kind={connected ? "live" : "off"} />
         <Text
           voice="mono"
@@ -44,17 +45,18 @@ export const PageHeader: React.FC = () => {
           tracking="widest"
           uppercase
         >
-          {connected ? "stream live" : "stream idle"}
+          {connected ? "Live updates" : isFallback ? "Refreshing" : "Connecting"}
         </Text>
-        <Divider className="!w-px !h-4 !bg-border-strong" />
+        <Divider className="hidden sm:block !w-px !h-4 !bg-border-strong" />
         <Text
           voice="mono"
           size="2xs"
           tone="dim"
+          className="hidden sm:block"
           tracking="widest"
           uppercase
         >
-          v1.0.0 · phase 2
+          Local studio
         </Text>
       </div>
     </header>

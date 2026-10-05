@@ -59,7 +59,7 @@ Generated meshes land in the `archeon-data` named volume.
 
 ### B. Local dev (no Docker)
 
-Prereqs: Python 3.10+, Node 20+, NVIDIA GPU (recommended).
+Prereqs: Python 3.10–3.12, Node 22.12+, NVIDIA GPU for model validation.
 
 ```bash
 git clone https://github.com/yuri-schmaltz/my-hunyuan-3D
@@ -70,6 +70,17 @@ make dev               # starts API on :8081 and Vite dev server on :5173
 ```
 
 Open <http://localhost:5173> for the UI, or hit the API directly:
+
+For API development without the ML stack, use `make install-api` instead of
+`make install`; it starts the service but does not enable model inference.
+Texture generation also requires the native rasterizer and mesh processor:
+with the CUDA toolkit and a C++ compiler installed, run `make install-native`.
+The Docker backend opts into this compilation during its build.
+
+When an API key is configured, the frontend asks for it at runtime. The key
+is held in memory and sent with both HTTP and SSE requests. Do not put it
+in `VITE_*` build variables. Production Docker builds use the nginx proxy
+on the UI's origin; local development defaults to API port 8081.
 
 ```bash
 curl -X POST http://localhost:8081/v1/generate \
@@ -97,6 +108,9 @@ ones:
 | `ARCHEON_CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allow-list. |
 | `ARCHEON_DEVICE` | `cuda` | `cuda` or `cpu`. CPU is for tests only. |
 | `ARCHEON_MODEL` | `tencent/Hunyuan3D-2` | HuggingFace model id. |
+| `ARCHEON_MODEL_SUBFOLDER` | `hunyuan3d-dit-v2-0` | Geometry checkpoint folder; override together with model id. |
+| `ARCHEON_MULTIVIEW_MODEL` | `tencent/Hunyuan3D-2mv` | Four-view geometry model. |
+| `ARCHEON_MULTIVIEW_SUBFOLDER` | `hunyuan3d-dit-v2-mv` | Four-view checkpoint folder. |
 | `ARCHEON_SAVE_DIR` | `$XDG_CACHE_HOME/hy3dgen/archeon` | Where generated meshes are written. |
 | `ARCHEON_JOB_DB` | `$XDG_STATE_HOME/hy3dgen/archeon/jobs.db` | SQLite file. Empty = no persistence. |
 | `ARCHEON_MAX_HISTORY` | `1000` | Cap on in-memory jobs; eviction deletes from DB. |
@@ -124,9 +138,10 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('ten
 Models land in `~/.cache/huggingface` by default — point `HF_HOME` at a
 larger disk on a dedicated GPU box.
 
-For systems with <6 GB VRAM, set `ARCHEON_DEVICE=cuda` and the
-launcher/profile handling will offload aggressively (this is the
-"GPU Poor" path inherited from the upstream `mmgp` integration).
+The legacy launcher provides `mmgp` memory profiles. The API loads geometry,
+text-to-image and texture pipelines on demand, but does not yet share the
+launcher's offload profiles. Measure VRAM use with your selected models;
+low-VRAM operation of the API has not been validated.
 
 ## API surface (summary)
 

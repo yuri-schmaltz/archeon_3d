@@ -34,6 +34,7 @@ export interface JobEvents {
   refetch: () => void;
   /** Current snapshot of jobs (sorted by created_at desc). */
   jobs: JobResponse[];
+  loading: boolean;
 }
 
 export const JobEventsContext = createContext<JobEvents | null>(null);

@@ -19,6 +19,7 @@ the ``/files`` static mount in ``server.py`` needs a real path
 too (``settings.save_dir``), but the module-level constant is
 simpler to pass to ``StaticFiles(directory=SAVE_DIR)``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,23 +36,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ---------------------------------------------------------------------------
 
 _DEFAULT_SAVE_DIR = os.path.join(
-    os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache')),
-    'hy3dgen', 'archeon',
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+    "hy3dgen",
+    "archeon",
 )
 _DEFAULT_STATE_DIR = os.path.join(
-    os.environ.get('XDG_STATE_HOME', os.path.expanduser('~/.local/state')),
-    'hy3dgen', 'archeon',
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "hy3dgen",
+    "archeon",
 )
-
-# Kept as a module-level constant for the ``/files`` static mount.
-# Resolved to ``Settings().save_dir`` at import time below.
-SAVE_DIR = _DEFAULT_SAVE_DIR
-os.makedirs(SAVE_DIR, exist_ok=True)
-
 
 # ---------------------------------------------------------------------------
 # Pydantic Settings
 # ---------------------------------------------------------------------------
+
 
 class Settings(BaseSettings):
     """Validated application configuration.
@@ -64,11 +62,13 @@ class Settings(BaseSettings):
     Usage::
 
         from hy3dgen.api.config import settings
-        settings.api_key            # str | None
-        settings.save_dir           # Path
-        settings.job_db_path        # Path | None
-        settings.bind_host          # str (precedence-aware)
+
+        settings.api_key  # str | None
+        settings.save_dir  # Path
+        settings.job_db_path  # Path | None
+        settings.bind_host  # str (precedence-aware)
     """
+
     model_config = SettingsConfigDict(
         env_prefix="ARCHEON_",
         env_file=".env",
@@ -100,12 +100,15 @@ class Settings(BaseSettings):
     device: str = Field(default="cuda", description="cuda | cpu")
     model: str = Field(default="tencent/Hunyuan3D-2", description="HF model id")
     mini_model: str = Field(default="tencent/Hunyuan3D-2mini", description="HF mini model id")
+    model_subfolder: str = "hunyuan3d-dit-v2-0"
+    multiview_model: str = "tencent/Hunyuan3D-2mv"
+    multiview_subfolder: str = "hunyuan3d-dit-v2-mv"
     hf_home: str | None = Field(default=None, description="HF cache directory")
 
     # -- Storage paths --------------------------------------------------
     save_dir: str = Field(default=_DEFAULT_SAVE_DIR, description="Output mesh dir")
     job_db: str | None = Field(
-        default_factory=lambda: os.path.join(_DEFAULT_STATE_DIR, 'jobs.db'),
+        default_factory=lambda: os.path.join(_DEFAULT_STATE_DIR, "jobs.db"),
         description="SQLite job DB. Empty string disables persistence.",
     )
     max_history: int = Field(default=1000, ge=0, description="In-memory job cap")
@@ -133,7 +136,9 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, v: str) -> str:
         v = v.upper()
         if v not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
-            raise ValueError(f"log_level must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL, got {v!r}")
+            raise ValueError(
+                f"log_level must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL, got {v!r}"
+            )
         return v
 
     @field_validator("device")
@@ -170,6 +175,7 @@ class Settings(BaseSettings):
     @field_validator("save_dir", mode="after")
     @classmethod
     def _ensure_save_dir(cls, v: str) -> str:
+        v = v.strip() or _DEFAULT_SAVE_DIR
         Path(v).mkdir(parents=True, exist_ok=True)
         return v
 
@@ -228,27 +234,45 @@ except Exception:
     # succeeds. The user can fix the env and restart to pick up the
     # intended values.
     import os as _os
+
     _saved = {k: _os.environ.pop(k) for k in list(_os.environ) if k.startswith("ARCHEON_")}
     try:
         # Pass _env_file explicitly so pydantic_settings doesn't read it.
         settings = Settings.model_construct(
-            host=None, port=8081, workers=1,
-            api_key=None, cors_origins="*", allow_credentials=False,
-            device="cuda", model="tencent/Hunyuan3D-2",
-            mini_model="tencent/Hunyuan3D-2mini", hf_home=None,
-            save_dir=_DEFAULT_SAVE_DIR, job_db=None,
-            max_history=1000, max_age_seconds=86_400,
-            log_level="INFO", log_file=None, log_json=False,
-            default_seed=1234, default_steps=50, default_guidance=5.0,
-            default_octree=256, default_face_count=40_000,
+            host=None,
+            port=8081,
+            workers=1,
+            api_key=None,
+            cors_origins="*",
+            allow_credentials=False,
+            device="cuda",
+            model="tencent/Hunyuan3D-2",
+            mini_model="tencent/Hunyuan3D-2mini",
+            hf_home=None,
+            save_dir=_DEFAULT_SAVE_DIR,
+            job_db=None,
+            max_history=1000,
+            max_age_seconds=86_400,
+            log_level="INFO",
+            log_file=None,
+            log_json=False,
+            default_seed=1234,
+            default_steps=50,
+            default_guidance=5.0,
+            default_octree=256,
+            default_face_count=40_000,
         )
     finally:
         _os.environ.update(_saved)
+
+# Static mounts and generation must use the same resolved output directory.
+SAVE_DIR = settings.save_dir
 
 
 # ---------------------------------------------------------------------------
 # Backward-compatible helpers
 # ---------------------------------------------------------------------------
+
 
 def get_job_db_path() -> str | None:
     return settings.job_db_path
@@ -291,7 +315,9 @@ def configure_logging() -> None:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(
             logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=50 * 1024 * 1024, backupCount=5,
+                log_file,
+                maxBytes=50 * 1024 * 1024,
+                backupCount=5,
                 encoding="utf-8",
             )
         )

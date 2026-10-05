@@ -20,6 +20,12 @@ x-backend-env: &backend-env
   # If you have an NVIDIA GPU, the api service uses the cuda base image.
   # On CPU-only hosts, set ARCHEON_DEVICE=cpu (or rely on the env var).
   ARCHEON_DEVICE: ${ARCHEON_DEVICE:-cuda}
+  ARCHEON_MODEL: ${ARCHEON_MODEL:-tencent/Hunyuan3D-2}
+  ARCHEON_MODEL_SUBFOLDER: ${ARCHEON_MODEL_SUBFOLDER:-hunyuan3d-dit-v2-0}
+  ARCHEON_MULTIVIEW_MODEL: ${ARCHEON_MULTIVIEW_MODEL:-tencent/Hunyuan3D-2mv}
+  ARCHEON_MULTIVIEW_SUBFOLDER: ${ARCHEON_MULTIVIEW_SUBFOLDER:-hunyuan3d-dit-v2-mv}
+  ARCHEON_MAX_HISTORY: ${ARCHEON_MAX_HISTORY:-1000}
+  ARCHEON_MAX_AGE_SECONDS: ${ARCHEON_MAX_AGE_SECONDS:-86400}
   # API key (set in .env). When empty, auth is disabled (dev only).
   ARCHEON_API_KEY: ${ARCHEON_API_KEY:-}
   ARCHEON_CORS_ORIGINS: ${ARCHEON_CORS_ORIGINS:-http://localhost}
@@ -67,7 +73,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8081}
+        VITE_API_URL: ${VITE_API_URL:-}
     image: archeon-frontend:local
     container_name: archeon-frontend
     restart: unless-stopped

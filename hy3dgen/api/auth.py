@@ -5,15 +5,17 @@ include a matching ``X-API-Key`` header. When the env var is unset, auth is
 disabled and the server is intended to be bound to ``127.0.0.1`` only.
 
 The check is implemented as a FastAPI dependency so routes can opt in
-explicitly (``/health`` and ``/v1/system/metrics`` stay open for unauthenticated
-monitoring), and tests can override it via ``app.dependency_overrides``.
+explicitly (``/health`` stays open for unauthenticated monitoring), and
+tests can override it via ``app.dependency_overrides``.
 """
+
 from __future__ import annotations
 
 import hmac
 import os
 from typing import Annotated
 
+from dotenv import dotenv_values
 from fastapi import Depends, Header, HTTPException, status
 
 
@@ -23,7 +25,10 @@ def get_api_key() -> str | None:
     Returns None when auth is disabled (no key configured). Callers should
     treat None as "skip auth" rather than "deny".
     """
-    key = os.environ.get("ARCHEON_API_KEY", "").strip()
+    configured = os.environ.get("ARCHEON_API_KEY")
+    if configured is None:
+        configured = dotenv_values(".env").get("ARCHEON_API_KEY")
+    key = (configured or "").strip()
     return key or None
 
 

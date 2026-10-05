@@ -10,15 +10,14 @@
  * Rows hover with a subtle surface change. The status filter is a
  * row of underline tabs (matching the new ModeChips aesthetic).
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { apiClient, BASE_URL } from "../../api/client";
+import { apiClient, BASE_URL, errorMessage } from "../../api/client";
 import { JobStatus } from "../../api/types";
 import type { JobResponse, JobStatusType } from "../../api/types";
 import { X, Download, Scissors, Eye, EyeOff } from "lucide-react";
 import { MeshPreview } from "./MeshPreview";
 import { useJobEvents } from "../../context/useJobEvents";
-import { useJobStream } from "../../api/useJobStream";
 import {
   Text,
   StatusDot,
@@ -28,9 +27,6 @@ import {
   Pill,
   type StatusKind,
 } from "../../design/primitives";
-
-const POLL_INTERVAL_MS = 2000;
-const MAX_POLL_BACKOFF_MS = 30_000;
 
 type StatusFilter = "all" | JobStatusType;
 
@@ -52,102 +48,32 @@ const kindByStatus: Record<JobStatusType, StatusKind> = {
 };
 
 export const JobGallery: React.FC = () => {
-  const [jobs, setJobs] = useState<JobResponse[]>(() => []);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingUid, setPendingUid] = useState<string | null>(null);
   const [previewingUid, setPreviewingUid] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-
-  const { job: streamedJob, isFallback: sseFallback, connected: sseConnected } =
-    useJobStream(BASE_URL, previewingUid, {
-      enabled: previewingUid !== null,
-    });
-  const {
-    jobs: streamJobs,
-    isFallback: listIsFallback,
-    connected: listConnected,
-    refetch: refetchList,
-  } = useJobEvents();
-
-  useEffect(() => {
-    setJobs(
-      [...streamJobs].sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-      ),
-    );
-    setLoading(false);
-  }, [streamJobs]);
-
-  const inFlight = useRef(false);
-  const consecutiveFailures = useRef(0);
-  const { onJobSubmitted } = useJobEvents();
-  void refetchList;
-
-  const fetchJobs = async (): Promise<boolean> => {
-    if (inFlight.current) return true;
-    inFlight.current = true;
-    try {
-      const res = await apiClient.get<JobResponse[]>("/jobs");
-      setJobs(
-        res.data.sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-        ),
-      );
-      setError(null);
-      consecutiveFailures.current = 0;
-      return true;
-    } catch (err) {
-      consecutiveFailures.current += 1;
-      setError(err instanceof Error ? err.message : "Failed to load jobs");
-      return false;
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      if (cancelled || document.hidden) {
-        timer = setTimeout(tick, POLL_INTERVAL_MS);
-        return;
-      }
-      const ok = await fetchJobs();
-      const delay = ok
-        ? POLL_INTERVAL_MS
-        : Math.min(
-            POLL_INTERVAL_MS * 2 ** consecutiveFailures.current,
-            MAX_POLL_BACKOFF_MS,
-          );
-      timer = setTimeout(tick, delay);
-    };
-    timer = setTimeout(tick, 0);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-
-  useEffect(
-    () => onJobSubmitted(() => refetchList()),
-    [onJobSubmitted, refetchList],
-  );
+  const { jobs: streamJobs, isFallback: listIsFallback, connected: listConnected,
+    loading, lastError, refetch: refetchList } = useJobEvents();
+  const error = actionError ?? lastError;
+  const jobs = useMemo(() => [...streamJobs].sort(
+    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+  ), [streamJobs]);
 
   const handleCancel = async (uid: string) => {
+    setPendingUid(uid);
+    setActionError(null);
     try {
       await apiClient.delete(`/jobs/${uid}`);
       refetchList();
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : "Cancel failed");
-    }
+      setActionError(errorMessage(err));
+    } finally { setPendingUid(null); }
   };
 
   const handleOptimize = async (uid: string) => {
+    setPendingUid(uid);
+    setActionError(null);
     try {
       const res = await apiClient.post<{ file_path: string }>(
         "/meshops/process",
@@ -160,8 +86,8 @@ export const JobGallery: React.FC = () => {
       );
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : "Optimization failed");
-    }
+      setActionError(errorMessage(err));
+    } finally { setPendingUid(null); }
   };
 
   const previewUrl = (job: JobResponse): string | null => {
@@ -174,7 +100,7 @@ export const JobGallery: React.FC = () => {
     ? jobs.find((j) => j.uid === previewingUid) ?? null
     : null;
   const previewedJob =
-    previewingUid && streamedJob ? streamedJob : previewedFromList;
+    previewedFromList;
 
   const visible =
     statusFilter === "all"
@@ -184,7 +110,7 @@ export const JobGallery: React.FC = () => {
   return (
     <section className="bg-bg">
       {/* Header */}
-      <div className="flex items-baseline justify-between gap-4 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-3">
         <Stack gap={1}>
           <Text
             voice="mono"
@@ -195,7 +121,7 @@ export const JobGallery: React.FC = () => {
           >
             Job stream
           </Text>
-          <Text voice="display" size="lg" tracking="tight">
+          <Text as="h2" voice="display" size="xl" tracking="tight">
             Recent jobs
           </Text>
         </Stack>
@@ -230,7 +156,7 @@ export const JobGallery: React.FC = () => {
 
       {/* Status filter row */}
       <div
-        role="tablist"
+        role="group"
         aria-label="Filter jobs by status"
         className="flex border-b border-border overflow-x-auto"
       >
@@ -243,8 +169,7 @@ export const JobGallery: React.FC = () => {
           return (
             <button
               key={f.key}
-              role="tab"
-              aria-selected={isActive}
+              aria-pressed={isActive}
               onClick={() => setStatusFilter(f.key)}
               className={
                 "px-4 h-10 flex items-center gap-2 " +
@@ -320,7 +245,7 @@ export const JobGallery: React.FC = () => {
                     tone="dim"
                     tracking="wider"
                   >
-                    {sseFallback ? "· polling" : sseConnected ? "· live" : "· connecting"}
+                    {listIsFallback ? "· polling" : listConnected ? "· live" : "· connecting"}
                   </Text>
                 </Stack>
                 <Button
@@ -371,6 +296,7 @@ export const JobGallery: React.FC = () => {
             <JobRow
               key={job.uid}
               job={job}
+              pending={pendingUid === job.uid}
               isPreviewing={previewingUid === job.uid}
               onPreviewToggle={() =>
                 setPreviewingUid(previewingUid === job.uid ? null : job.uid)
@@ -390,16 +316,17 @@ export const JobGallery: React.FC = () => {
 
 const JobRow: React.FC<{
   job: JobResponse;
+  pending: boolean;
   isPreviewing: boolean;
   previewUrl: string | null;
   onPreviewToggle: () => void;
   onCancel: () => void;
   onOptimize: () => void;
-}> = ({ job, isPreviewing, previewUrl, onPreviewToggle, onCancel, onOptimize }) => {
+}> = ({ job, pending, isPreviewing, previewUrl, onPreviewToggle, onCancel, onOptimize }) => {
   const kind = kindByStatus[job.status];
   const isDone = job.status === JobStatus.COMPLETED;
   const isCancellable =
-    job.status === JobStatus.QUEUED || job.status === JobStatus.PROCESSING;
+    job.status === JobStatus.QUEUED;
   const time = new Date(job.created_at).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
@@ -413,7 +340,7 @@ const JobRow: React.FC<{
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -4 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
-      className="group grid grid-cols-[auto_1fr_auto] items-center gap-6 px-2 py-4 hover:bg-surface-1 transition-colors"
+      className="group grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-3 sm:gap-6 px-2 py-4 hover:bg-surface-1 transition-colors"
     >
       <StatusDot kind={kind} size={8} />
       <div className="min-w-0">
@@ -439,10 +366,11 @@ const JobRow: React.FC<{
           as="div"
           className="mt-1"
         >
-          {time} · {job.request_type ?? "unknown"}
+          {new Date(job.created_at).toLocaleDateString()} · {time} · {job.request_type ?? "Generation"}
         </Text>
+        {job.error && <p className="text-sm text-danger mt-2 break-words">{job.error}</p>}
       </div>
-      <Stack direction="row" gap={2} align="center">
+      <Stack direction="row" gap={2} align="center" className="col-start-2 sm:col-start-auto">
         {isDone && previewUrl && (
           <>
             <Button
@@ -459,7 +387,7 @@ const JobRow: React.FC<{
               target="_blank"
               rel="noreferrer noopener"
               className={
-                "inline-flex items-center justify-center gap-2 h-7 px-3 " +
+                "inline-flex items-center justify-center gap-2 h-9 max-sm:h-11 px-3 " +
                 "rounded-sm font-mono uppercase tracking-wider " +
                 "text-[11px] text-fg-muted hover:text-fg hover:bg-surface-2 " +
                 "transition-colors duration-[120ms]"
@@ -473,6 +401,7 @@ const JobRow: React.FC<{
               variant="ghost"
               size="sm"
               onClick={onOptimize}
+              disabled={pending}
               title="Optimize (Decimate 50%)"
               aria-label="Optimize mesh"
             >
@@ -485,6 +414,7 @@ const JobRow: React.FC<{
             variant="ghost"
             size="sm"
             onClick={onCancel}
+            disabled={pending}
             title="Cancel job"
             aria-label="Cancel job"
           >

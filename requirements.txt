@@ -18,7 +18,8 @@ diso
 tqdm
 
 # Mesh Processing
-trimesh
+trimesh>=4
+fast-simplification
 pymeshlab
 pygltflib
 xatlas

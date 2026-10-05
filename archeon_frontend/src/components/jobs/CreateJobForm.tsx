@@ -1,488 +1,509 @@
 /**
  * CreateJobForm — submit a new generation job.
  *
- * Layout: vertical stack of zones separated by hairline dividers.
- *   1. Header row with the title + submit button on the right.
- *   2. Mode tabs (ModeChips).
- *   3. Mode-specific input area.
- *   4. Advanced settings (collapsed by default).
- *   5. Inline message line for success/error.
- *
- * Same business logic as before — validates file types, encodes
- * base64, posts to /v1/generate, notifies JobEventsProvider — but
- * rendered with the new design system primitives.
+ * Now: i18n-aware, drag-and-drop enabled, and capable of pre-filling
+ * from a ?reuse=<uid> query param (used by the Library "Reuse" action).
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { apiClient } from "../../api/client";
+import { useObjectUrl } from "./useObjectUrl";
+import { buildGenerationRequest, MAX_IMAGE_BYTES, MAX_MESH_BYTES, VIEW_KEYS, type ViewKey } from "../../api/generation";
+import { apiClient, errorMessage } from "../../api/client";
 import { useJobEvents } from "../../context/useJobEvents";
+import { useCapabilities, FALLBACK_CAPABILITIES } from "../../api/capabilities";
+import { useT } from "../../i18n";
+import { go } from "../../router";
+
+const DEFAULT_CAPABILITIES = FALLBACK_CAPABILITIES;
 import {
-  Stack,
-  Divider,
-  Button,
-  Field,
-  FieldTextarea,
-  FieldFile,
-  Text,
-  Pill,
+    Stack,
+    Divider,
+    Button,
+    Field,
+    FieldTextarea,
+    FieldFile,
+    Text,
+    Pill,
 } from "../../design/primitives";
 import { ModeChips, type ModeKey } from "./ModeChips";
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_MESH_BYTES = 100 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const MAX_IMAGE_MB = Math.round(MAX_IMAGE_BYTES / 1024 / 1024);
+const MAX_MESH_MB = Math.round(MAX_MESH_BYTES / 1024 / 1024);
 
-type ViewKey = "front" | "back" | "left" | "right";
-
-const VIEW_KEYS: ViewKey[] = ["front", "back", "left", "right"];
-
-export const CreateJobForm: React.FC = () => {
-  const [hint, setHint] = useState<ModeKey>("text");
-  const [text, setText] = useState("");
-  const [image, setImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [views, setViews] = useState<Record<ViewKey, File | null>>({
-    front: null,
-    back: null,
-    left: null,
-    right: null,
-  });
-  const [viewPreviews, setViewPreviews] = useState<Record<ViewKey, string | null>>({
-    front: null,
-    back: null,
-    left: null,
-    right: null,
-  });
-  const [mesh, setMesh] = useState<File | null>(null);
-  const [refImage, setRefImage] = useState<File | null>(null);
-  const [refPreview, setRefPreview] = useState<string | null>(null);
-
-  const [steps, setSteps] = useState(50);
-  const [guidance, setGuidance] = useState(5.0);
-  const [seed, setSeed] = useState(1234);
-  const [texture, setTexture] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState<
-    { type: "success" | "error"; text: string } | null
-  >(null);
-
-  const { notifyJobSubmitted } = useJobEvents();
-
-  useEffect(() => {
-    return () => {
-      if (imagePreview) URL.revokeObjectURL(imagePreview);
-      if (refPreview) URL.revokeObjectURL(refPreview);
-      Object.values(viewPreviews).forEach((u) => {
-        if (u) URL.revokeObjectURL(u);
-      });
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const setImageFile = (file: File | null) => {
-    setImage(file);
-    setImagePreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return file ? URL.createObjectURL(file) : null;
-    });
-  };
-  const setRefImageFile = (file: File | null) => {
-    setRefImage(file);
-    setRefPreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return file ? URL.createObjectURL(file) : null;
-    });
-  };
-  const setViewFile = (key: ViewKey, file: File | null) => {
-    setViews((prev) => ({ ...prev, [key]: file }));
-    setViewPreviews((prev) => {
-      if (prev[key]) URL.revokeObjectURL(prev[key]!);
-      return { ...prev, [key]: file ? URL.createObjectURL(file) : null };
-    });
-  };
-
-  const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-      setMessage({
-        type: "error",
-        text: `Unsupported image type: ${file.type || "unknown"}. Use PNG, JPEG, or WebP.`,
-      });
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      setMessage({
-        type: "error",
-        text: `Image too large. Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
-      });
-      return;
-    }
-    setImageFile(file);
-    setMessage(null);
-  };
-  const handleViewPick =
-    (key: ViewKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-        setMessage({
-          type: "error",
-          text: `View "${key}" must be PNG, JPEG, or WebP.`,
-        });
-        return;
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        setMessage({
-          type: "error",
-          text: `View "${key}" too large. Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
-        });
-        return;
-      }
-      setViewFile(key, file);
-      setMessage(null);
-    };
-  const handleMeshPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_MESH_BYTES) {
-      setMessage({
-        type: "error",
-        text: `Mesh too large. Max ${MAX_MESH_BYTES / 1024 / 1024} MB.`,
-      });
-      return;
-    }
-    setMesh(file);
-    setMessage(null);
-  };
-  const handleRefPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-      setMessage({ type: "error", text: "Reference must be PNG, JPEG, or WebP." });
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      setMessage({
-        type: "error",
-        text: `Reference too large. Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
-      });
-      return;
-    }
-    setRefImageFile(file);
-    setMessage(null);
-  };
-
-  const canSubmit = useMemo(() => {
-    if (hint === "text") return text.trim().length > 0;
-    if (hint === "image") return image !== null;
-    if (hint === "multiview")
-      return VIEW_KEYS.every((k) => views[k] !== null);
-    if (hint === "texture")
-      return mesh !== null && (refImage !== null || text.trim().length > 0);
-    return false;
-  }, [hint, text, image, views, mesh, refImage]);
-
-  const handleSubmit = async () => {
-    if (!canSubmit || isSubmitting) return;
-    setIsSubmitting(true);
-    setMessage(null);
-    try {
-      const payload: Record<string, unknown> = { steps, guidance, seed, texture };
-      if (text.trim()) payload.text = text.trim();
-      if (image) payload.image = await fileToBase64(image);
-      if (refImage) payload.image = await fileToBase64(refImage);
-      if (VIEW_KEYS.some((k) => views[k] !== null)) {
-        payload.views = {
-          front: views.front ? await fileToBase64(views.front) : "",
-          back: views.back ? await fileToBase64(views.back) : "",
-          left: views.left ? await fileToBase64(views.left) : "",
-          right: views.right ? await fileToBase64(views.right) : "",
-        };
-      }
-      if (mesh) payload.mesh = await fileToBase64(mesh);
-
-      const r = await apiClient.post("/generate", payload);
-      setMessage({ type: "success", text: `Job submitted · ${r.data.uid}` });
-      notifyJobSubmitted();
-      setText("");
-      setImage(null);
-      if (imagePreview) URL.revokeObjectURL(imagePreview);
-      setImagePreview(null);
-      setViews({ front: null, back: null, left: null, right: null });
-      Object.values(viewPreviews).forEach((u) => {
-        if (u) URL.revokeObjectURL(u);
-      });
-      setViewPreviews({ front: null, back: null, left: null, right: null });
-      setMesh(null);
-      setRefImage(null);
-      if (refPreview) URL.revokeObjectURL(refPreview);
-      setRefPreview(null);
-    } catch (err) {
-      setMessage({
-        type: "error",
-        text: err instanceof Error ? err.message : "Submission failed",
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <section className="bg-bg">
-      {/* Header row */}
-      <div className="flex items-baseline justify-between gap-4 pb-3">
-        <Stack gap={1}>
-          <Text
-            voice="mono"
-            size="2xs"
-            tone="muted"
-            tracking="widest"
-            uppercase
-          >
-            New job
-          </Text>
-          <Text voice="display" size="lg" tracking="tight">
-            Configure generation
-          </Text>
-        </Stack>
-        <Button
-          variant="primary"
-          size="md"
-          onClick={handleSubmit}
-          disabled={!canSubmit || isSubmitting}
-        >
-          {isSubmitting ? "Submitting…" : "Submit →"}
-        </Button>
-      </div>
-      <Divider />
-
-      {/* Mode tabs */}
-      <ModeChips value={hint} onChange={setHint} />
-
-      {/* Mode-specific input area */}
-      <div className="py-5">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={hint}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
-          >
-            {hint === "text" && (
-              <Stack gap={4}>
-                <FieldTextarea
-                  label="Prompt"
-                  placeholder="a small red cube…"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  rows={3}
-                />
-                <TextureToggle texture={texture} onChange={setTexture} />
-              </Stack>
-            )}
-            {hint === "image" && (
-              <Stack gap={4}>
-                <FieldFile
-                  label="Source image"
-                  accept={ALLOWED_IMAGE_TYPES.join(",")}
-                  onChange={handleImagePick}
-                  filename={image?.name ?? null}
-                />
-                {imagePreview && (
-                  <img
-                    src={imagePreview}
-                    className="max-h-32 border border-border"
-                    alt="preview"
-                  />
-                )}
-                <TextureToggle texture={texture} onChange={setTexture} />
-              </Stack>
-            )}
-            {hint === "multiview" && (
-              <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                {VIEW_KEYS.map((key) => (
-                  <Stack key={key} gap={1}>
-                    <FieldFile
-                      label={key}
-                      accept={ALLOWED_IMAGE_TYPES.join(",")}
-                      onChange={handleViewPick(key)}
-                      filename={views[key]?.name ?? null}
-                    />
-                    {viewPreviews[key] && (
-                      <img
-                        src={viewPreviews[key]!}
-                        className="max-h-20 border border-border"
-                        alt={`${key} preview`}
-                      />
-                    )}
-                  </Stack>
-                ))}
-              </div>
-            )}
-            {hint === "texture" && (
-              <Stack gap={4}>
-                <FieldFile
-                  label="Mesh (.glb)"
-                  accept=".glb"
-                  onChange={handleMeshPick}
-                  filename={mesh?.name ?? null}
-                />
-                <FieldFile
-                  label="Reference image (optional if prompt is set)"
-                  accept={ALLOWED_IMAGE_TYPES.join(",")}
-                  onChange={handleRefPick}
-                  filename={refImage?.name ?? null}
-                />
-                {refPreview && (
-                  <img
-                    src={refPreview}
-                    className="max-h-20 border border-border"
-                    alt="ref preview"
-                  />
-                )}
-                <Field
-                  label="Or a reference prompt"
-                  placeholder="matte black finish…"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
-              </Stack>
-            )}
-          </motion.div>
-        </AnimatePresence>
-      </div>
-
-      <Divider />
-      {/* Advanced settings */}
-      <details className="py-3 group">
-        <summary className="cursor-pointer list-none flex items-center justify-between">
-          <Text
-            voice="mono"
-            size="2xs"
-            tone="muted"
-            tracking="widest"
-            uppercase
-            as="span"
-          >
-            Advanced
-          </Text>
-          <Text
-            voice="mono"
-            size="2xs"
-            tone="dim"
-            tracking="wider"
-            as="span"
-            className="group-open:rotate-180 transition-transform"
-          >
-            ▾
-          </Text>
-        </summary>
-        <div className="grid grid-cols-3 gap-4 pt-4">
-          <Field
-            label="Steps"
-            type="number"
-            min={1}
-            max={100}
-            value={steps}
-            onChange={(e) => setSteps(Number(e.target.value))}
-          />
-          <Field
-            label="Guidance"
-            type="number"
-            min={1}
-            max={20}
-            step={0.1}
-            value={guidance}
-            onChange={(e) => setGuidance(Number(e.target.value))}
-          />
-          <Field
-            label="Seed"
-            type="number"
-            value={seed}
-            onChange={(e) => setSeed(Number(e.target.value))}
-          />
-        </div>
-      </details>
-      <Divider />
-
-      {/* Status line */}
-      <div className="pt-3 h-6 flex items-center">
-        {message ? (
-          <Pill tone={message.type === "error" ? "danger" : "success"}>
-            {message.text}
-          </Pill>
-        ) : (
-          <Text
-            voice="mono"
-            size="2xs"
-            tone="dim"
-            tracking="widest"
-            uppercase
-          >
-            Ready
-          </Text>
-        )}
-      </div>
-    </section>
-  );
+const VIEW_LABEL: Record<ViewKey, string> = {
+    front: 'create.field.front',
+    back: 'create.field.back',
+    left: 'create.field.left',
+    right: 'create.field.right',
 };
 
-const TextureToggle: React.FC<{
-  texture: boolean;
-  onChange: (v: boolean) => void;
-}> = ({ texture, onChange }) => (
-  <label className="flex items-center gap-3 cursor-pointer select-none">
-    <span
-      className={
-        "inline-block w-9 h-5 rounded-sm border " +
-        "transition-colors duration-[120ms] " +
-        (texture
-          ? "bg-accent border-accent"
-          : "bg-surface-2 border-border-strong")
-      }
-    >
-      <span
-        className={
-          "block w-4 h-4 mt-[1px] bg-bg " +
-          "transition-transform duration-[120ms] ease-[cubic-bezier(0.16,1,0.3,1)] " +
-          (texture ? "translate-x-[18px]" : "translate-x-[1px]")
+export const CreateJobForm: React.FC = () => {
+    const t = useT();
+    const { capabilities } = useCapabilities();
+    const { notifyJobSubmitted } = useJobEvents();
+    const [hint, setHint] = useState<ModeKey>("text");
+    const [text, setText] = useState("");
+    const [texturePrompt, setTexturePrompt] = useState("");
+    const [image, setImage] = useState<File | null>(null);
+    const imagePreview = useObjectUrl(image);
+    const [views, setViews] = useState<Record<ViewKey, File | null>>({
+        front: null, back: null, left: null, right: null,
+    });
+    const viewPreviews = {
+        front: useObjectUrl(views.front),
+        back: useObjectUrl(views.back),
+        left: useObjectUrl(views.left),
+        right: useObjectUrl(views.right),
+    };
+    const [mesh, setMesh] = useState<File | null>(null);
+    const [refImage, setRefImage] = useState<File | null>(null);
+    const refPreview = useObjectUrl(refImage);
+
+    const [steps, setSteps] = useState(50);
+    const [guidance, setGuidance] = useState(5.0);
+    const [seed, setSeed] = useState(1234);
+    const [texture, setTexture] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [message, setMessage] = useState<
+        { type: "success" | "error"; text: string } | null
+    >(null);
+    const [dragOver, setDragOver] = useState<ModeKey | null>(null);
+    const formRef = useRef<HTMLFormElement>(null);
+
+    // Presets from /v1/capabilities; fall back to the documented values.
+    const presets = capabilities?.presets ?? DEFAULT_CAPABILITIES.presets;
+    const applyPreset = (key: 'fast' | 'balanced' | 'detailed') => {
+        const p = presets[key];
+        if (p) {
+            setSteps(p.steps);
+            setGuidance(p.guidance);
         }
-      />
-    </span>
-    <input
-      type="checkbox"
-      className="sr-only"
-      checked={texture}
-      onChange={(e) => onChange(e.target.checked)}
-    />
-    <Text
-      voice="mono"
-      size="2xs"
-      tone="muted"
-      tracking="widest"
-      uppercase
-      as="span"
+    };
+
+    // Fallback to an available mode if the active one becomes unavailable.
+    useEffect(() => {
+        const modes = capabilities?.modes;
+        if (!modes) return;
+        const current = modes[hint];
+        if (current && current.available === false) {
+            const next = (Object.entries(modes) as Array<[
+                ModeKey,
+                { available: boolean; reason: string | null; requires: string[] },
+            ]>).find(([, info]) => info.available);
+            if (next) setHint(next[0]);
+        }
+    }, [capabilities, hint]);
+
+    // Reuse parameters from the library (?reuse=<uid>).
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
+        const uid = params.get('reuse');
+        if (!uid) return;
+        void (async () => {
+            try {
+                const res = await apiClient.get(`/jobs/${uid}`);
+                const job = res.data;
+                const req = job.request_type ?? 'unknown';
+                const mode = req === 'image_to_3d' ? 'image'
+                    : req === 'text_to_3d' ? 'text'
+                    : req === 'multiview' ? 'multiview'
+                    : req === 'texture_mesh' ? 'texture' : 'text';
+                setHint(mode as ModeKey);
+                setMessage({ type: 'success', text: `Reused from ${uid.slice(0, 8)}.` });
+                // Clear the param so the same form doesn't re-populate later.
+                const hash = window.location.hash.split('?')[0];
+                window.history.replaceState({}, '', `${window.location.pathname}${window.location.search}${hash}`);
+            } catch (err) {
+                setMessage({ type: 'error', text: errorMessage(err) });
+            }
+        })();
+    }, []);
+
+    const setImageFile = setImage;
+    const setRefImageFile = setRefImage;
+    const setViewFile = (key: ViewKey, file: File | null) =>
+        setViews((previous) => ({ ...previous, [key]: file }));
+
+    function validateImage(file: File, viewLabel?: string): string | null {
+        if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+            return viewLabel
+                ? t('create.error.viewType', { view: viewLabel })
+                : t('create.error.unsupportedType');
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+            const msg = t('create.error.imageTooLarge', { max: MAX_IMAGE_MB });
+            const viewMsg = t('create.error.viewTooLarge', { view: viewLabel ?? '', max: MAX_IMAGE_MB });
+            return viewLabel ? viewMsg : msg;
+        }
+        return null;
+    }
+
+    const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const error = validateImage(file);
+        if (error) { setMessage({ type: "error", text: error }); return; }
+        setImageFile(file);
+        setMessage(null);
+    };
+    const handleViewPick =
+        (key: ViewKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const label = t(VIEW_LABEL[key]);
+            const error = validateImage(file, label);
+            if (error) { setMessage({ type: "error", text: error }); return; }
+            setViewFile(key, file);
+            setMessage(null);
+        };
+    const handleMeshPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith(".glb")) {
+            setMessage({ type: "error", text: t('create.error.meshRequired') });
+            return;
+        }
+        if (file.size > MAX_MESH_BYTES) {
+            setMessage({ type: "error", text: t('create.error.meshTooLarge', { max: MAX_MESH_MB }) });
+            return;
+        }
+        setMesh(file);
+        setMessage(null);
+    };
+    const handleRefPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const err = validateImage(file);
+        if (err) { setMessage({ type: "error", text: err }); return; }
+        setRefImageFile(file);
+        setMessage(null);
+    };
+
+    // Generic drag-and-drop handler for the 4 input types.
+    function handleDrop(mode: ModeKey, files: FileList | null) {
+        if (!files || files.length === 0) return;
+        const file = files[0];
+        setDragOver(null);
+        if (mode === 'image') {
+            const err = validateImage(file);
+            if (err) { setMessage({ type: 'error', text: err }); return; }
+            setImageFile(file);
+        } else if (mode === 'texture' && file.name.toLowerCase().endsWith('.glb')) {
+            setMesh(file);
+        } else if (mode === 'texture') {
+            const err = validateImage(file);
+            if (err) { setMessage({ type: 'error', text: err }); return; }
+            setRefImageFile(file);
+        } else if (mode === 'multiview') {
+            const err = validateImage(file);
+            if (err) { setMessage({ type: 'error', text: err }); return; }
+            setViewFile('front', file);
+        }
+        setMessage(null);
+    }
+
+    const canSubmit = useMemo(() => {
+        if (hint === "text") return text.trim().length > 0;
+        if (hint === "image") return image !== null;
+        if (hint === "multiview") return VIEW_KEYS.every((k) => views[k] !== null);
+        if (hint === "texture") return mesh !== null && (refImage !== null || texturePrompt.trim().length > 0);
+        return false;
+    }, [hint, text, texturePrompt, image, views, mesh, refImage]);
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (!canSubmit || isSubmitting) return;
+        setIsSubmitting(true);
+        setMessage(null);
+        try {
+            if (!Number.isInteger(steps) || steps < 1 || steps > 100
+                || !Number.isFinite(guidance) || guidance < 1 || guidance > 20
+                || !Number.isSafeInteger(seed)) throw new Error("Check the advanced settings.");
+            const payload = await buildGenerationRequest(hint,
+                { text, texturePrompt, image, views, mesh, refImage },
+                { steps, guidance, seed, texture });
+
+            const r = await apiClient.post("/generate", payload);
+            setMessage({ type: "success", text: t('create.success.submittedWith', { mode: String(r.data.uid).slice(0, 8) }) });
+            notifyJobSubmitted();
+            if (hint === "text") setText("");
+            if (hint === "image") setImage(null);
+            if (hint === "multiview") setViews({ front: null, back: null, left: null, right: null });
+            if (hint === "texture") { setMesh(null); setRefImage(null); setTexturePrompt(""); }
+        } catch (err) {
+            setMessage({ type: "error", text: errorMessage(err) });
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    return (
+        <form id="create-job" ref={formRef} className="bg-bg" onSubmit={handleSubmit}>
+            <fieldset disabled={isSubmitting} className="min-w-0">
+                {/* Header row */}
+                <div className="flex flex-wrap items-center justify-between gap-4 pb-3">
+                    <Stack gap={1}>
+                        <Text
+                            voice="mono"
+                            size="2xs"
+                            tone="muted"
+                            tracking="widest"
+                            uppercase
+                        >
+                            {t('nav.create')}
+                        </Text>
+                    </Stack>
+                    <Button
+                        type="submit"
+                        variant="primary"
+                        size="md"
+                        disabled={!canSubmit || isSubmitting}
+                    >
+                        {isSubmitting ? t('create.submit.busy') : t('create.submit')}
+                    </Button>
+                </div>
+                <Divider />
+
+                {/* Mode tabs */}
+                <ModeChips
+                    value={hint}
+                    onChange={(mode) => { setHint(mode); setMessage(null); }}
+                    availability={capabilities.modes}
+                />
+
+                {/* Mode-specific input area */}
+                <div className="py-5">
+                    <AnimatePresence mode="wait">
+                        <motion.div
+                            key={hint}
+                            role="tabpanel"
+                            id={`mode-panel-${hint}`}
+                            aria-labelledby={`mode-tab-${hint}`}
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -4 }}
+                            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
+                        >
+                            {hint === "text" && (
+                                <FieldTextarea
+                                    label={t('create.field.prompt')}
+                                    hint={t('create.field.prompt.hint')}
+                                    value={text}
+                                    onChange={(e) => setText(e.target.value)}
+                                    rows={4}
+                                    autoFocus
+                                />
+                            )}
+                            {hint === "image" && (
+                                <Stack gap={3}>
+                                    <DropZone
+                                        mode="image"
+                                        label={t('create.field.image')}
+                                        hint={t('create.field.image.hint')}
+                                        preview={imagePreview}
+                                        dragOver={dragOver === 'image'}
+                                        onPick={handleImagePick}
+                                        onDrop={(files) => handleDrop('image', files)}
+                                        onEnter={() => setDragOver('image')}
+                                        onLeave={() => setDragOver(null)}
+                                    />
+                                </Stack>
+                            )}
+                            {hint === "multiview" && (
+                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                    {VIEW_KEYS.map((key) => (
+                                        <DropZone
+                                            key={key}
+                                            mode="multiview"
+                                            label={t(VIEW_LABEL[key])}
+                                            hint=""
+                                            preview={viewPreviews[key]}
+                                            dragOver={dragOver === key as unknown as ModeKey}
+                                            onPick={handleViewPick(key)}
+                                            onDrop={(files) => handleDrop('multiview', files)}
+                                            onEnter={() => setDragOver(key as unknown as ModeKey)}
+                                            onLeave={() => setDragOver(null)}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                            {hint === "texture" && (
+                                <Stack gap={4}>
+                                    <FieldFile
+                                        label={t('create.field.mesh')}
+                                        accept=".glb"
+                                        onChange={handleMeshPick}
+                                        filename={mesh?.name}
+                                    />
+                                    <FieldTextarea
+                                        label={t('create.field.texturePrompt')}
+                                        hint={t('create.field.texturePrompt.hint')}
+                                        value={texturePrompt}
+                                        onChange={(e) => setTexturePrompt(e.target.value)}
+                                        rows={3}
+                                    />
+                                    <DropZone
+                                        mode="texture"
+                                        label={t('create.field.refImage')}
+                                        hint={t('create.field.image.hint')}
+                                        preview={refPreview}
+                                        dragOver={dragOver === 'texture'}
+                                        onPick={handleRefPick}
+                                        onDrop={(files) => handleDrop('texture', files)}
+                                        onEnter={() => setDragOver('texture')}
+                                        onLeave={() => setDragOver(null)}
+                                    />
+                                </Stack>
+                            )}
+                        </motion.div>
+                    </AnimatePresence>
+                </div>
+                <Divider />
+
+                {/* Preset + advanced */}
+                <details className="py-3">
+                    <summary className="cursor-pointer text-fg-muted hover:text-fg text-sm font-mono uppercase tracking-wider">
+                        {t('create.advanced')}
+                    </summary>
+                    <div className="pt-4 space-y-4">
+                        <div className="flex flex-wrap gap-2">
+                            {(['fast', 'balanced', 'detailed'] as const).map((key) => (
+                                <Button
+                                    key={key}
+                                    variant="ghost"
+                                    size="sm"
+                                    type="button"
+                                    onClick={() => applyPreset(key)}
+                                >
+                                    {t(`create.preset.${key}`)}
+                                </Button>
+                            ))}
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <Field
+                                label={t('create.steps')}
+                                type="number"
+                                min={1}
+                                max={100}
+                                value={steps}
+                                onChange={(e) => setSteps(Number(e.target.value))}
+                            />
+                            <Field
+                                label={t('create.guidance')}
+                                type="number"
+                                step={0.1}
+                                min={1}
+                                max={20}
+                                value={guidance}
+                                onChange={(e) => setGuidance(Number(e.target.value))}
+                            />
+                            <Field
+                                label={t('create.seed')}
+                                type="number"
+                                value={seed}
+                                onChange={(e) => setSeed(Number(e.target.value))}
+                            />
+                            <label className="flex items-center gap-2 mt-6">
+                                <input
+                                    type="checkbox"
+                                    checked={texture}
+                                    onChange={(e) => setTexture(e.target.checked)}
+                                    className="h-4 w-4 accent-accent"
+                                />
+                                <span className="text-sm">{t('create.texture')}</span>
+                            </label>
+                        </div>
+                    </div>
+                </details>
+            </fieldset>
+
+            {/* Inline message */}
+            <div className="min-h-6 pt-4">
+                {message && (
+                    <Pill tone={message.type === 'success' ? 'success' : 'danger'}>
+                        {message.text}
+                    </Pill>
+                )}
+            </div>
+
+            {/* Footer actions */}
+            <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-border">
+                <Button variant="ghost" size="sm" type="button" onClick={() => go('library')}>
+                    {t('nav.library')} →
+                </Button>
+                <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    disabled={!canSubmit || isSubmitting}
+                >
+                    {isSubmitting ? t('create.submit.busy') : t('create.submit')}
+                </Button>
+            </div>
+        </form>
+    );
+};
+
+/**
+ * DropZone — drop-or-click area for image/mesh uploads. Highlights while
+ * a compatible file is dragged over.
+ */
+const DropZone: React.FC<{
+    mode: ModeKey | 'multiview';
+    label: string;
+    hint: string;
+    preview: string | null;
+    dragOver: boolean;
+    onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
+    onDrop: (files: FileList | null) => void;
+    onEnter: () => void;
+    onLeave: () => void;
+}> = ({ label, hint, preview, dragOver, onPick, onDrop, onEnter, onLeave }) => (
+    <label
+        onDragOver={(e) => { e.preventDefault(); onEnter(); }}
+        onDragLeave={onLeave}
+        onDrop={(e) => { e.preventDefault(); onDrop(e.dataTransfer.files); }}
+        className={
+            "flex flex-col gap-2 border border-dashed rounded p-3 " +
+            "transition-colors duration-[120ms] " +
+            (dragOver
+                ? "border-accent bg-accent/10"
+                : "border-border hover:border-border-strong")
+        }
     >
-      Also generate texture
-    </Text>
-  </label>
+        <Text
+            voice="mono"
+            size="2xs"
+            tone="muted"
+            tracking="widest"
+            uppercase
+        >
+            {label}
+        </Text>
+        {preview ? (
+            <img
+                src={preview}
+                alt={label}
+                className="w-full max-h-32 object-contain bg-surface-1 rounded"
+            />
+        ) : (
+            <div className="h-20 flex items-center justify-center text-fg-dim text-xs font-mono">
+                ↓ drop file
+            </div>
+        )}
+        {hint && (
+            <Text voice="body" size="xs" tone="dim">
+                {hint}
+            </Text>
+        )}
+        <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.glb"
+            onChange={onPick}
+            className="text-xs file:mr-3 file:px-2 file:py-1 file:border file:border-border file:rounded file:bg-surface-2 file:text-fg file:font-mono file:uppercase file:tracking-wider file:text-2xs"
+        />
+    </label>
 );
 
-async function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === "string") {
-        const comma = result.indexOf(",");
-        resolve(comma >= 0 ? result.slice(comma + 1) : result);
-      } else {
-        reject(new Error("FileReader returned non-string"));
-      }
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+export default CreateJobForm;

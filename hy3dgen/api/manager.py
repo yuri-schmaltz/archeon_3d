@@ -5,9 +5,6 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
-
-import torch
 
 from hy3dgen.api.metrics import (
     JOB_DURATION,
@@ -20,6 +17,7 @@ from hy3dgen.api.metrics import (
 )
 from hy3dgen.api.persistence import JobStore
 from hy3dgen.api.schemas import GenerationRequest, JobRequest, JobResponse, JobStatus
+from hy3dgen.api.timeutils import timestamp, utc_now
 from hy3dgen.inference import ModelWorker
 
 logger = logging.getLogger(__name__)
@@ -51,14 +49,24 @@ class PriorityRequestManager:
 
     def __init__(
         self,
-        device='cuda',
+        device="cuda",
         max_concurrent=1,
         max_history: int = 1000,
         store: JobStore | None = None,
+        max_age_seconds: int = 86_400,
+        model_path: str = "tencent/Hunyuan3D-2mini",
+        model_subfolder: str = "hunyuan3d-dit-v2-mini-turbo",
+        multiview_model: str = "tencent/Hunyuan3D-2mv",
+        multiview_subfolder: str = "hunyuan3d-dit-v2-mv",
     ):
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self.jobs: dict[str, JobResponse] = {}
         self.device = device
+        self.model_path = model_path
+        self.model_subfolder = model_subfolder
+        self.multiview_model = multiview_model
+        self.multiview_subfolder = multiview_subfolder
+        self.max_age_seconds = max_age_seconds
         self._shutdown_event = asyncio.Event()
         self._worker_task: asyncio.Task | None = None
 
@@ -108,6 +116,7 @@ class PriorityRequestManager:
             return 0
         # Lazy import to avoid a hard dependency at module load.
         from hy3dgen.api.config import SAVE_DIR
+
         count = 0
         replayed = 0
         async for job, payload in self.store.restore_all():
@@ -124,7 +133,7 @@ class PriorityRequestManager:
                     "its original request payload was not stored. "
                     "Please resubmit."
                 )
-                job.completed_at = datetime.utcnow().isoformat()
+                job.completed_at = utc_now()
                 await self._persist(job)
                 self._notify(job)
                 logger.warning(f"Cannot replay job {job.uid}: payload missing.")
@@ -134,19 +143,22 @@ class PriorityRequestManager:
             except Exception as e:
                 job.status = JobStatus.FAILED
                 job.error = f"Stored payload could not be deserialized: {e}"
-                job.completed_at = datetime.utcnow().isoformat()
+                job.completed_at = utc_now()
                 await self._persist(job)
                 self._notify(job)
                 logger.warning(f"Cannot replay job {job.uid}: bad payload ({e}).")
                 continue
             # Mid-flight jobs use a low priority (high number) so we
             # don't jump in front of anything new.
+            job.status = JobStatus.QUEUED
+            job.updated_at = utc_now()
+            job.request_type = request.type
+            await self._persist(job)
             self.queue.put_nowait((100, time.time(), job.uid, request, SAVE_DIR))
             replayed += 1
             logger.info(f"Re-queued active job {job.uid} after restart.")
         logger.info(
-            f"Rehydrated {count} jobs from persistent store "
-            f"({replayed} re-queued for replay)."
+            f"Rehydrated {count} jobs from persistent store ({replayed} re-queued for replay)."
         )
         return count
 
@@ -164,6 +176,8 @@ class PriorityRequestManager:
             self._worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
+            self._worker_task = None
+        await self._drain_queue_on_shutdown()
         logger.info("PriorityRequestManager worker stopped.")
 
     async def submit_job(
@@ -191,7 +205,8 @@ class PriorityRequestManager:
         job = JobResponse(
             uid=uid,
             status=JobStatus.QUEUED,
-            created_at=datetime.utcnow().isoformat()
+            created_at=utc_now(),
+            request_type=request.type if request else None,
         )
         self.jobs[uid] = job
 
@@ -231,6 +246,109 @@ class PriorityRequestManager:
     def get_job(self, uid: str) -> JobResponse | None:
         return self.jobs.get(uid)
 
+    def set_stage(self, uid: str, stage: str, progress: float | None = None) -> None:
+        """Update the stage label and progress for a running job.
+
+        Called by the inference worker during execution to surface
+        fine-grained state ("loading_model", "shape_generation",
+        "texturing", "exporting") to the UI. The change is persisted
+        and broadcast to subscribers, just like any other transition.
+        ``progress`` is a float in [0, 1]; pass ``None`` when unknown.
+        """
+        job = self.jobs.get(uid)
+        if job is None:
+            return
+        job.stage = stage
+        if progress is not None:
+            try:
+                job.stage_progress = max(0.0, min(1.0, float(progress)))
+            except (TypeError, ValueError):
+                job.stage_progress = None
+        # Persist + notify asynchronously to keep this hot-path non-blocking.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._persist(job))
+        # Hold the task reference so the GC doesn't drop it mid-flight.
+        self._persist_tasks: set[asyncio.Task] = getattr(self, "_persist_tasks", set())
+        self._persist_tasks.add(task)
+        task.add_done_callback(self._persist_tasks.discard)
+        self._notify(job)
+
+    def capabilities(self) -> dict:
+        """Return a snapshot of static + dynamic state for ``/v1/capabilities``.
+
+        The shape matches ``CapabilitiesResponse`` in ``schemas``. The
+        worker may be lazily loaded; ``models[*].loaded`` reflects
+        the current state, while ``modes[*].available`` also accounts
+        for whether the corresponding pipeline is enabled.
+        """
+        worker = self.worker
+        shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
+        tex_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
+        t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
+        mv_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
+        return {
+            "modes": {
+                "text": {
+                    "available": bool(t2i_loaded or shape_loaded),
+                    "reason": None if (t2i_loaded or shape_loaded) else "Shape/text-to-image model not loaded.",
+                    "requires": ["text_to_image"] if not t2i_loaded else [],
+                },
+                "image": {
+                    "available": bool(shape_loaded),
+                    "reason": None if shape_loaded else "Shape model not loaded.",
+                    "requires": [],
+                },
+                "multiview": {
+                    "available": bool(mv_loaded or shape_loaded),
+                    "reason": None if (mv_loaded or shape_loaded) else "Multiview model not loaded.",
+                    "requires": [],
+                },
+                "texture": {
+                    "available": bool(tex_loaded or shape_loaded),
+                    "reason": None if (tex_loaded or shape_loaded) else "Texture model not loaded.",
+                    "requires": [],
+                },
+            },
+            "models": {
+                "shape": {
+                    "id": self.model_path,
+                    "subfolder": self.model_subfolder,
+                    "loaded": shape_loaded,
+                },
+                "multiview": {
+                    "id": self.multiview_model,
+                    "subfolder": self.multiview_subfolder,
+                    "loaded": mv_loaded,
+                },
+                "texture": {
+                    "id": getattr(worker, "tex_model_path", "tencent/Hunyuan3D-2")
+                    if worker is not None
+                    else "tencent/Hunyuan3D-2",
+                    "subfolder": None,
+                    "loaded": tex_loaded,
+                },
+                "text_to_image": {
+                    "id": "tencent/Hunyuan3D-2",
+                    "subfolder": None,
+                    "loaded": t2i_loaded,
+                },
+            },
+            "presets": {
+                "fast": {"steps": 5, "guidance": 5.0, "octree_resolution": 192},
+                "balanced": {"steps": 50, "guidance": 5.0, "octree_resolution": 256},
+                "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
+            },
+            "limits": {
+                "image_bytes": 10 * 1024 * 1024,
+                "mesh_bytes": 30 * 1024 * 1024,
+                "queue_depth": self.max_history or 64,
+                "body_bytes": 64 * 1024 * 1024,
+            },
+        }
+
     async def evict_old_jobs(self, max_age_seconds: int = 24 * 3600) -> int:
         """Drop completed/failed/cancelled jobs older than ``max_age_seconds``.
 
@@ -249,7 +367,7 @@ class PriorityRequestManager:
             if job.status not in terminal_statuses or not job.created_at:
                 continue
             try:
-                created_ts = datetime.fromisoformat(job.created_at).timestamp()
+                created_ts = timestamp(job.created_at)
             except ValueError:
                 continue
             if created_ts < cutoff:
@@ -282,7 +400,7 @@ class PriorityRequestManager:
         for uid, job in self.jobs.items():
             if job.status in terminal_statuses and job.created_at:
                 try:
-                    created_ts = datetime.fromisoformat(job.created_at).timestamp()
+                    created_ts = timestamp(job.created_at)
                 except ValueError:
                     created_ts = 0.0
                 sortable.append((uid, created_ts))
@@ -297,6 +415,43 @@ class PriorityRequestManager:
             logger.info(f"Evicted {to_remove} jobs to respect max_history={self.max_history}.")
             self._notify_list()
         return to_remove
+
+    async def cleanup_files_older_than(
+        self, max_age_seconds: int, save_dir: str | None = None
+    ) -> int:
+        """Delete mesh files older than ``max_age_seconds`` from disk.
+
+        This is the **disk** half of retention: it never touches the DB.
+        Use ``store.delete_older_than`` for the DB half. The two are
+        intentionally separate so a SQLite reset doesn't accidentally destroy
+        artifacts the user might still want to download.
+        """
+        import os
+        import pathlib
+
+        if self.store is None:
+            return 0
+        base = pathlib.Path(save_dir) if save_dir else None
+        victims: list[JobResponse] = await self.store.list_older_than(max_age_seconds)
+        removed = 0
+        for job in victims:
+            if not job.file_path:
+                continue
+            path = pathlib.Path(job.file_path)
+            # If the path is absolute, use it; else resolve relative to save_dir.
+            if not path.is_absolute() and base is not None:
+                path = base / path.name
+            try:
+                if path.exists():
+                    os.remove(path)
+                    removed += 1
+            except OSError as exc:
+                logger.warning(f"Failed to remove {path}: {exc}")
+        if removed:
+            logger.info(
+                f"Removed {removed} mesh file(s) older than {max_age_seconds}s."
+            )
+        return removed
 
     async def cancel_job(self, uid: str) -> None:
         # We can only cancel jobs that are still in the queue.
@@ -323,6 +478,8 @@ class PriorityRequestManager:
             logger.debug(f"cancel_job({uid}): status changed under us, skipping")
             return
         job.error = "Cancelled by user"
+        job.completed_at = utc_now()
+        job.updated_at = job.completed_at
         logger.info(f"Job {uid} cancelled")
         await self._persist(job)
         self._notify(job)
@@ -330,38 +487,25 @@ class PriorityRequestManager:
     async def _process_queue(self):
         while not self._shutdown_event.is_set():
             try:
-                # Wait for a job OR the shutdown event. Without this, a
-                # stop() call would block until the next job arrives
-                # (which on a quiet server could be forever).
-                get_task = asyncio.create_task(self.queue.get())
-                shutdown_task = asyncio.create_task(self._shutdown_event.wait())
-                done, pending = await asyncio.wait(
-                    {get_task, shutdown_task},
-                    return_when=asyncio.FIRST_COMPLETED,
+                _, _, uid, request, save_dir = await asyncio.wait_for(
+                    self.queue.get(),
+                    timeout=0.5,
                 )
-                for t in pending:
-                    t.cancel()
-                if shutdown_task in done:
-                    # Drain the queue so unstarted jobs get marked failed
-                    # rather than silently dropped on shutdown.
-                    await self._drain_queue_on_shutdown()
-                    break
-                if get_task not in done:
-                    continue
-                _, _, uid, request, save_dir = get_task.result()
                 try:
                     # Check status; cancel/fail means we skip the job but
                     # still mark the queue slot done so task_done() counts
                     # stay balanced.
-                    if uid not in self.jobs or self.jobs[uid].status in (JobStatus.CANCELLED, JobStatus.FAILED):
-                        self.queue.task_done()
+                    if uid not in self.jobs or self.jobs[uid].status in (
+                        JobStatus.CANCELLED,
+                        JobStatus.FAILED,
+                    ):
                         continue
 
                     # Re-check shutdown before starting an expensive
                     # inference - we don't want to spin up a new job
                     # while the user is trying to stop the server.
                     if self._shutdown_event.is_set():
-                        self.queue.task_done()
+                        await self.cancel_job(uid)
                         break
 
                     # Run job
@@ -374,13 +518,15 @@ class PriorityRequestManager:
                     self.queue.task_done()
 
                 # Cleanup
-                self._aggressive_cleanup()
+                await self._aggressive_cleanup()
 
+            except asyncio.TimeoutError:
+                continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}")
-                await asyncio.sleep(1) # Backoff
+                await asyncio.sleep(1)  # Backoff
 
     async def _execute_model_worker(self, uid: str, request: JobRequest, save_dir: str):
         job = self.jobs[uid]
@@ -395,10 +541,12 @@ class PriorityRequestManager:
         try:
             # Validate texture_mesh has a reference (image or prompt) before
             # spinning up the worker.
-            if request and request.type == 'texture_mesh' and not getattr(request, 'has_reference', False):
-                raise ValueError(
-                    "texture_mesh requires at least one of: image, prompt."
-                )
+            if (
+                request
+                and request.type == "texture_mesh"
+                and not getattr(request, "has_reference", False)
+            ):
+                raise ValueError("texture_mesh requires at least one of: image, prompt.")
 
             # If we were rehydrated after a restart, request is None; we
             # can't replay the job without its original payload. Mark it
@@ -411,48 +559,57 @@ class PriorityRequestManager:
             # Initialize worker if needed (Lazy Loading)
             if self.worker is None:
                 logger.info("Initializing ModelWorker (Lazy Load)...")
+                self.set_stage(uid, "loading_model", 0.05)
                 # Blocking init logic, run in thread to avoid freezing API?
                 # Model loading is heavy.
                 self.worker = await asyncio.to_thread(
                     ModelWorker,
                     device=self.device,
-                    enable_tex=True, # Archeon default to enabled for now
-                    enable_t2i=True
+                    model_path=self.model_path,
+                    subfolder=self.model_subfolder,
+                    multiview_model_path=self.multiview_model,
+                    multiview_subfolder=self.multiview_subfolder,
+                    enable_tex=True,
+                    enable_t2i=True,
                 )
+                self.set_stage(uid, "loading_model", 0.3)
 
             # Prepare params dict from Pydantic model
             params = request.model_dump()
 
             # Map Pydantic fields to ModelWorker expectations
-            if request.type == 'text_to_3d':
-                params['text'] = request.prompt
-            elif request.type == 'texture_mesh':
+            if request.type == "text_to_3d":
+                params["text"] = request.prompt
+            elif request.type == "texture_mesh":
                 # texture_mesh implies texture=True; ModelWorker also expects the
                 # mesh (base64) to be present in params under the 'mesh' key, and
                 # a guidance image/prompt under 'image'/'text'.
-                params['texture'] = True
-                if request.prompt and 'text' not in params:
-                    params['text'] = request.prompt
+                params["texture"] = True
+                if request.prompt and "text" not in params:
+                    params["text"] = request.prompt
+
+            # Mark generation stage before the heavy lifting.
+            self.set_stage(uid, "shape_generation", 0.4)
 
             # Run generation in thread
             logger.info(f"Starting generation for job {uid}")
-            file_path = await asyncio.to_thread(
-                self.worker.generate,
-                uid,
-                params,
-                save_dir
-            )
+            file_path = await asyncio.to_thread(self.worker.generate, uid, params, save_dir)
+
+            # If the user requested texture and the worker produced one,
+            # the texture stage happened inside ``worker.generate`` already;
+            # we just round the progress up to "finished" here.
+            self.set_stage(uid, "exporting", 0.95)
 
             job.status = JobStatus.COMPLETED
             job.file_path = file_path
-            job.completed_at = datetime.utcnow().isoformat()
+            job.completed_at = utc_now()
             logger.info(f"Job {uid} completed successfully")
             # Clear the last_error latch after a success.
             self.last_error = None
             JOBS_COMPLETED.inc()
             if job.created_at:
                 try:
-                    start_ts = datetime.fromisoformat(job.created_at).timestamp()
+                    start_ts = timestamp(job.created_at)
                     JOB_DURATION.observe(time.time() - start_ts)
                 except ValueError:
                     pass
@@ -463,10 +620,11 @@ class PriorityRequestManager:
         except Exception as e:
             logger.error(f"Job {uid} failed: {e}")
             import traceback
+
             traceback.print_exc()
             job.status = JobStatus.FAILED
             job.error = str(e)
-            job.completed_at = datetime.utcnow().isoformat()
+            job.completed_at = utc_now()
             # Track the most recent failure so /health can surface it.
             self.last_error = f"{type(e).__name__}: {e}"
             JOBS_FAILED.labels(reason=type(e).__name__).inc()
@@ -489,6 +647,8 @@ class PriorityRequestManager:
             if job is not None and job.status == JobStatus.QUEUED:
                 _status_transition(job, JobStatus.QUEUED, JobStatus.CANCELLED)
                 job.error = "Server shutting down"
+                job.completed_at = utc_now()
+                job.updated_at = job.completed_at
                 await self._persist(job)
                 self._notify(job)
                 drained += 1
@@ -496,16 +656,21 @@ class PriorityRequestManager:
         if drained:
             logger.info(f"Drained {drained} queued job(s) on shutdown")
 
-    def _aggressive_cleanup(self):
+    async def _aggressive_cleanup(self):
         """Perform aggressive garbage collection and bounded history cleanup."""
         gc.collect()
-        if torch.cuda.is_available():
+        import sys
+
+        torch = sys.modules.get("torch")
+        if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
         # Keep the in-memory history bounded. We don't evict on every job
         # (would be wasteful for short bursts), but we do check periodically.
-        if self.max_history > 0 and len(self.jobs) > self.max_history * 1.2:
-            self.evict_to_size()
+        if self.max_history > 0 and len(self.jobs) > self.max_history:
+            await self.evict_to_size()
+        if self.max_age_seconds > 0:
+            await self.evict_old_jobs(self.max_age_seconds)
 
     # ------------------------------------------------------------------
     # Persistence + pub/sub
@@ -513,6 +678,7 @@ class PriorityRequestManager:
 
     async def _persist(self, job: JobResponse, payload: dict | None = None) -> None:
         """Mirror a job transition to the persistent store. No-op without one."""
+        job.updated_at = utc_now()
         if self.store is None:
             return
         try:
@@ -528,7 +694,7 @@ class PriorityRequestManager:
             queues = list(self._subscribers.get(job.uid, ()))
         for q in queues:
             try:
-                q.put_nowait(job)
+                q.put_nowait(job.model_copy(deep=True))
             except asyncio.QueueFull:  # pragma: no cover (unbounded queue)
                 logger.warning(f"Subscriber queue full for {job.uid}; dropping event")
         # Then notify list subscribers with a fresh snapshot.
@@ -547,7 +713,7 @@ class PriorityRequestManager:
         if not listeners:
             return
         snapshot = sorted(
-            self.jobs.values(),
+            (job.model_copy(deep=True) for job in self.jobs.values()),
             key=lambda j: j.created_at or "",
             reverse=True,
         )
@@ -574,7 +740,7 @@ class PriorityRequestManager:
         if current is None and self.store is not None:
             current = await self.store.get(uid)
         if current is not None:
-            q.put_nowait(current)
+            q.put_nowait(current.model_copy(deep=True))
         return q
 
     def unsubscribe(self, uid: str, queue: asyncio.Queue) -> None:
@@ -601,7 +767,7 @@ class PriorityRequestManager:
         # Prime with the current snapshot.
         q.put_nowait(
             sorted(
-                self.jobs.values(),
+                (job.model_copy(deep=True) for job in self.jobs.values()),
                 key=lambda j: j.created_at or "",
                 reverse=True,
             )
@@ -648,13 +814,16 @@ def _request_from_payload(payload: dict):
         TextTo3DRequest,
         TextureMeshRequest,
     )
+
     if _REQUEST_CLASSES["text_to_3d"] is None:
-        _REQUEST_CLASSES.update({
-            "text_to_3d": TextTo3DRequest,
-            "image_to_3d": ImageTo3DRequest,
-            "multiview": MultiviewRequest,
-            "texture_mesh": TextureMeshRequest,
-        })
+        _REQUEST_CLASSES.update(
+            {
+                "text_to_3d": TextTo3DRequest,
+                "image_to_3d": ImageTo3DRequest,
+                "multiview": MultiviewRequest,
+                "texture_mesh": TextureMeshRequest,
+            }
+        )
     if not isinstance(payload, dict):
         raise ValueError(f"Payload is not a dict: {type(payload).__name__}")
 

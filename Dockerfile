@@ -22,12 +22,13 @@ WORKDIR /app
 # Install Python deps in their own layer so source changes don't bust the cache.
 COPY requirements.txt .
 RUN pip3 install --upgrade pip \
+    && pip3 install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121 \
     && pip3 install -r requirements.txt
 
-# Copy the package and install it. ``pip install .`` triggers the C++/CUDA
-# extension build via setup.py.
+# Copy the package and opt into C++/CUDA extension compilation.
 COPY . .
-RUN pip3 install .
+ARG TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
+RUN ARCHEON_BUILD_NATIVE=1 pip3 install --no-build-isolation .
 
 # ----------------------------------------------------------------------
 # Runtime image: same base, but without the build-only tools.
@@ -60,20 +61,19 @@ RUN mkdir -p /app/logs /app/.cache
 ENV XDG_CACHE_HOME=/app/.cache
 ENV XDG_STATE_HOME=/app/.local/state
 
-# Backend API (when APP_MODE=api) and legacy launcher both bind to 0.0.0.0
-# when an API key is configured. CORS and auth are env-driven; see
+# Backend API (when APP_MODE=api) and legacy launcher bind to 0.0.0.0
+# inside the container. CORS and auth are env-driven; see
 # hy3dgen/api/config.py.
-EXPOSE 9000 8080
+EXPOSE 8081 8080
 
 # Default to the backend. Override with APP_MODE=launcher for the legacy UI.
 ENV APP_MODE=api
-# If you set ARCHEON_API_KEY the bind host upgrades to 0.0.0.0 automatically
-# (see get_bind_host). Leave it unset and the server stays on 127.0.0.1.
+# Configure ARCHEON_API_KEY before exposing the API beyond a trusted network.
 ENV ARCHEON_API_KEY=""
 
 ENTRYPOINT ["/bin/bash", "-c"]
 CMD ["if [ \"$APP_MODE\" = 'launcher' ]; then \
         exec hy3dgen-launcher --host 0.0.0.0 --port 8080; \
       else \
-        exec hy3dgen-api --host 0.0.0.0 --port 9000; \
+        exec hy3dgen-api --host 0.0.0.0; \
       fi"]

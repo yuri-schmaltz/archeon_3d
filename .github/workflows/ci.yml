@@ -112,7 +112,7 @@ jobs:
       - name: mypy
         run: |
           python -m mypy --follow-imports=silent \
-              --explicit-package-bases hy3dgen hy3dgen/api hy3dgen/cli.py
+              --explicit-package-bases hy3dgen
 
       - name: ruff
         run: |
@@ -136,7 +136,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: archeon_frontend/package-lock.json
 
@@ -148,6 +148,9 @@ jobs:
 
       - name: eslint
         run: npx eslint .
+
+      - name: Frontend tests
+        run: npm run test
 
       - name: Build
         run: npm run build

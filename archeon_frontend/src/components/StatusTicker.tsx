@@ -40,7 +40,7 @@ export const StatusTicker: React.FC = () => {
   );
 
   return (
-    <footer className="h-7 border-t border-border bg-bg flex items-center px-4 gap-3 z-(--z-ticker)">
+    <footer className="h-7 shrink-0 min-w-0 border-t border-border bg-bg flex items-center px-4 gap-3 z-(--z-ticker)">
       <Text voice="mono" size="2xs" tone="dim" tracking="widest" uppercase>
         feed
       </Text>
@@ -94,7 +94,7 @@ export const StatusTicker: React.FC = () => {
         )}
       </AnimatePresence>
       <div className="flex-1" />
-      <Text voice="mono" size="2xs" tone="dim" tracking="widest" uppercase>
+      <Text voice="mono" size="2xs" tone="dim" tracking="widest" uppercase className="whitespace-nowrap shrink-0">
         {events.length} event{events.length === 1 ? "" : "s"}
       </Text>
     </footer>

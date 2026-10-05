@@ -150,6 +150,7 @@ export const FieldFile: React.FC<FieldFileProps> = ({
         {filename ?? "No file selected"}
       </Text>
       <input
+        key={filename ?? "empty"}
         type="file"
         className="sr-only"
         {...rest}

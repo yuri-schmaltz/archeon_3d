@@ -1,65 +1,57 @@
 # Archeon 3D — Frontend
 
-React + TypeScript + Vite UI for the [Archeon 3D](https://github.com/yuri-schmaltz/my-hunyuan-3D) backend.
-
-The backend is the FastAPI server in `../hy3dgen/api/server.py` (entry point `hy3dgen-api`).
-This app talks to it over HTTP and polls the `/v1/jobs` and `/v1/system/metrics` endpoints.
-
-## Stack
-
-- React 19 + TypeScript 5.9
-- Vite 7 (dev server + bundler)
-- Tailwind CSS v4 (via `@tailwindcss/vite`)
-- Axios for HTTP
-
-## Prerequisites
-
-- Node.js ≥ 20
-- A running Archeon 3D backend (see the project root README)
+React 19, TypeScript 5.9, Vite 7 and Tailwind CSS 4 UI for the
+[Archeon API](../ARCHEON_README.md). The gallery uses one authenticated SSE
+connection per tab, reconnects after interruptions and polls while SSE is
+unavailable. System metrics are refreshed separately.
 
 ## Setup
 
+Requires Node.js 22.12+ and a running backend.
+
 ```bash
-npm install
-cp .env.example .env       # then edit VITE_API_URL if your backend is not on localhost:9000
-npm run dev                # http://localhost:5173
+npm ci
+cp .env.example .env
+npm run dev
 ```
+
+Open http://localhost:5173. The development API defaults to
+http://localhost:8081. Set `VITE_API_URL` to the backend base URL, without `/v1`.
+If unset in a production build, or explicitly empty, requests use the same
+origin as the UI. The Docker nginx proxy provides `/v1`, `/health`, `/docs`,
+`/openapi.json` and `/files`.
+
+If `ARCHEON_API_KEY` is configured on the backend, enter the key in the
+connection screen. It stays in memory for that page session and is passed in
+`X-API-Key` headers for HTTP and SSE. Reloading requires entering it again.
+There is no frontend environment variable for secrets.
 
 ## Scripts
 
-| Script | Purpose |
+| Command | Purpose |
 | --- | --- |
-| `npm run dev` | Vite dev server with HMR |
-| `npm run build` | Type-check (`tsc -b`) + production build to `dist/` |
-| `npm run preview` | Serve the production build locally |
-| `npm run lint` | ESLint (flat config) |
+| `npm run dev` | Development server with HMR |
+| `npm run build` | TypeScript checks and production bundle in `dist/` |
+| `npm run preview` | Local preview of the production build |
+| `npm run lint` | ESLint |
+| `npm run test` | Vitest request serialization tests |
 
-## Environment variables
+## Organization
 
-| Name | Default | Description |
-| --- | --- | --- |
-| `VITE_API_URL` | `http://localhost:9000` | Backend base URL. The app appends `/v1` itself. |
+- `src/api/client.ts`: base URL, authenticated HTTP client and API error messages.
+- `src/api/generation.ts`: validation and serialization of the selected generation mode.
+- `src/api/useJobFeed.ts`: shared authenticated SSE, reconnection and fallback polling.
+- `src/context/JobContext.tsx`: shared gallery state and recent status transitions.
+- `src/components/jobs/`: creation form, gallery and model preview.
+- `src/components/common/ApiAccessGate.tsx`: connection and runtime authentication.
+- `src/design/`: tokens, focus styles and reusable primitives.
 
-## Project layout
+Form drafts are separate for each mode; only the selected mode is submitted.
+Image uploads are limited to 10 MiB each and GLB uploads to 30 MiB. These UI
+limits keep the current base64 requests below nginx's 64 MiB body limit.
+Server-side payload limits and multipart uploads remain future work.
 
-```
-src/
-├── api/                      # HTTP client + shared types
-│   ├── client.ts             # Axios instance, reads VITE_API_URL
-│   └── types.ts              # JobStatus, JobRequest, SystemMetrics, etc.
-├── components/
-│   ├── common/               # Cross-cutting (ErrorBoundary, …)
-│   ├── jobs/                 # CreateJobForm, JobGallery
-│   └── monitoring/           # SystemMonitor
-├── App.tsx                   # Top-level layout
-├── main.tsx                  # React root + ErrorBoundary wrap
-└── index.css                 # Tailwind theme tokens
-```
-
-## Conventions
-
-- All async API calls go through `apiClient` (never `fetch` directly).
-- Polling components check `document.hidden` and pause when the tab is in the
-  background.
-- `<form>` inputs always use a paired `<label htmlFor>` / `id`.
-- Status-driven UI uses the typed `JobStatus` const, not raw strings.
+Use `apiClient` for HTTP actions and `useJobFeed` for streams. Label inputs,
+keep keyboard navigation for mode tabs and distinguish job failures from
+connection failures. The gallery's Refresh action forces a HTTP read even
+while SSE is connected.

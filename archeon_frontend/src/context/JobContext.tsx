@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { JobEventsContext, type JobEvents } from "./useJobEvents";
 import { useJobListStream } from "../api/useJobListStream";
 import { BASE_URL } from "../api/client";
@@ -31,30 +31,25 @@ export const JobEventsProvider: React.FC<{ children: React.ReactNode }> = ({
   const listeners = useRef<Set<() => void>>(new Set());
   const [submissionCount, setSubmissionCount] = useState(0);
   const [events, setEvents] = useState<JobEvent[]>([]);
-  const seenUids = useRef<Set<string>>(new Set());
+  const statuses = useRef<Map<string, string>>(new Map());
 
-  const { jobs, connected, isFallback, error, refetch } =
+  const { jobs, connected, isFallback, loading, error, refetch } =
     useJobListStream(BASE_URL);
 
   // Diff the streaming job list and append new entries to the event
   // log. Only statuses that change are recorded as new events.
   useEffect(() => {
-    if (jobs.length === 0) return;
-    let changed = false;
-    setEvents((prev) => {
-      const next = [...prev];
-      for (const j of jobs) {
-        const key = `${j.uid}:${j.status}`;
-        if (seenUids.current.has(key)) continue;
-        seenUids.current.add(key);
-        next.push(toEvent(j));
-        changed = true;
-      }
-      if (next.length > MAX_EVENTS) {
-        next.splice(0, next.length - MAX_EVENTS);
-      }
-      return changed ? next : prev;
-    });
+    const list = Array.isArray(jobs) ? jobs : [];
+    const currentIds = new Set(list.map((job) => job.uid));
+    for (const uid of statuses.current.keys()) {
+      if (!currentIds.has(uid)) statuses.current.delete(uid);
+    }
+    const fresh = list.filter((job) => statuses.current.get(job.uid) !== job.status);
+    for (const job of fresh) statuses.current.set(job.uid, job.status);
+    if (fresh.length) {
+      const added = fresh.map(toEvent).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+      setEvents((previous) => [...previous, ...added].slice(-MAX_EVENTS));
+    }
   }, [jobs]);
 
   const onJobSubmitted = useCallback((cb: () => void) => {
@@ -66,6 +61,7 @@ export const JobEventsProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const notifyJobSubmitted = useCallback(() => {
     setSubmissionCount((n) => n + 1);
+    refetch();
     for (const cb of listeners.current) {
       try {
         cb();
@@ -73,11 +69,11 @@ export const JobEventsProvider: React.FC<{ children: React.ReactNode }> = ({
         console.error("JobEvent listener threw:", err);
       }
     }
-  }, []);
+  }, [refetch]);
 
   const lastError = error ?? null;
 
-  const value: JobEvents = {
+  const value: JobEvents = useMemo(() => ({
     onJobSubmitted,
     notifyJobSubmitted,
     submissionCount,
@@ -87,7 +83,8 @@ export const JobEventsProvider: React.FC<{ children: React.ReactNode }> = ({
     lastError,
     refetch,
     jobs,
-  };
+    loading,
+  }), [onJobSubmitted, notifyJobSubmitted, submissionCount, events, connected, isFallback, lastError, refetch, jobs, loading]);
 
   return (
     <JobEventsContext.Provider value={value}>

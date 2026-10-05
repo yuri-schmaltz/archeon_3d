@@ -39,8 +39,8 @@ const variantClass: Record<Variant, string> = {
 };
 
 const sizeClass: Record<Size, string> = {
-  sm: "h-7 px-3 text-[11px]",
-  md: "h-9 px-4 text-xs",
+  sm: "h-9 max-sm:h-11 px-3 text-xs",
+  md: "h-11 px-4 text-xs",
   lg: "h-11 px-6 text-sm",
 };
 
@@ -50,6 +50,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref,
   ) => (
     <button
+      type="button"
       ref={ref}
       className={clsx(
         "inline-flex items-center justify-center gap-2 " +

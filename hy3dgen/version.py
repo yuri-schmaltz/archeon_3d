@@ -17,10 +17,10 @@ from importlib.metadata import PackageNotFoundError, version as pkg_version
 
 logger = logging.getLogger(__name__)
 
-__version__ = "2.0.0"
+__version__ = "2.1.0.post7"
 
 # GitHub repo for checking latest release
-GITHUB_REPO = "tencent/Hunyuan3D-2"
+GITHUB_REPO = "yuri-schmaltz/my-hunyuan-3D"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
@@ -34,7 +34,7 @@ def get_current_version() -> str:
 
 def _parse_version(v: str):
     """Parse version string into comparable tuple."""
-    match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', v)
+    match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", v)
     if match:
         return tuple(int(x) for x in match.groups())
     return (0, 0, 0)

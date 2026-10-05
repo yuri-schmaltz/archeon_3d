@@ -1,21 +1,28 @@
-import os
-import trimesh
+from __future__ import annotations
+
 import logging
-from typing import Optional
+import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import trimesh
 
 logger = logging.getLogger(__name__)
+
 
 class MeshProcessor:
     def __init__(self):
         pass
 
     def load_mesh(self, file_path: str) -> trimesh.Trimesh:
+        import trimesh
+
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Mesh file not found: {file_path}")
-        
+
         try:
             # Force 'mesh' to avoid getting a Scene object for single GLBs
-            mesh = trimesh.load(file_path, force='mesh')
+            mesh = trimesh.load(file_path, force="mesh")
             return mesh
         except Exception as e:
             logger.error(f"Failed to load mesh {file_path}: {e}")
@@ -28,13 +35,13 @@ class MeshProcessor:
         """
         if ratio >= 1.0 or ratio <= 0.0:
             return mesh
-        
+
         target_faces = int(len(mesh.faces) * ratio)
         logger.info(f"Decimating mesh from {len(mesh.faces)} to {target_faces} faces")
-        
+
         try:
             # simplify_quadratic_decimation is the best balance
-            simplified = mesh.simplify_quadratic_decimation(target_faces)
+            simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
             return simplified
         except Exception as e:
             logger.warning(f"Decimation failed: {e}")
@@ -45,13 +52,13 @@ class MeshProcessor:
         Load, process, and save mesh.
         """
         mesh = self.load_mesh(input_path)
-        
-        if action == 'decimate':
-            ratio = params.get('ratio', 0.5)
+
+        if action == "decimate":
+            ratio = params.get("ratio", 0.5)
             mesh = self.decimate(mesh, ratio)
-        elif action == 'convert':
-            pass # Just loading and saving converts format based on extension
-            
+        elif action == "convert":
+            pass  # Just loading and saving converts format based on extension
+
         # Export
         # Trimesh exports based on file extension
         mesh.export(output_path)

@@ -54,6 +54,10 @@ install: venv ## Install the package (incl. dev + ml extras) into the venv.
 	@echo ">>> installing hy3dgen (with ml + dev extras)"
 	$(PIP) install -e ".[ml,dev]"
 
+.PHONY: install-native
+install-native: install ## Compile texture extensions (requires CUDA toolkit + C++ compiler).
+	ARCHEON_BUILD_NATIVE=1 $(PIP) install --no-build-isolation -e .
+
 .PHONY: install-api
 install-api: venv ## Install only the API deps (no model weights). Lightweight.
 	@echo ">>> installing hy3dgen (API-only)"
@@ -117,7 +121,7 @@ ruff-fix: ## Auto-fix what ruff can.
 mypy: ## Type-check the Python package.
 	@if [ ! -x "$(PYTHON)" ]; then $(MAKE) install-api; fi
 	rm -rf .mypy_cache
-	$(PYTHON) -m mypy --follow-imports=silent --explicit-package-bases hy3dgen hy3dgen/api hy3dgen/cli.py
+	$(PYTHON) -m mypy --follow-imports=silent --explicit-package-bases hy3dgen
 
 .PHONY: tsc
 tsc: ## Type-check the frontend.

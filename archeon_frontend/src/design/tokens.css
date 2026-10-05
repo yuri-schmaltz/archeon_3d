@@ -23,8 +23,8 @@
 
   /* Text — warm off-white. */
   --color-fg:        #e8e4dc;
-  --color-fg-muted:  #8a857c;
-  --color-fg-dim:    #5a564f;
+  --color-fg-muted:  #b2aba0;
+  --color-fg-dim:    #8a857c;
 
   /* Accents — exactly one primary accent (amber). Other statuses
      reuse the same surface tones with a different foreground. */
@@ -32,7 +32,7 @@
   --color-accent-2:  #ffa040;   /* hover, soft emphasis */
   --color-success:   #3eddc1;   /* completed */
   --color-warning:   #d4a52a;   /* processing / queued */
-  --color-danger:    #d44a2a;   /* failed */
+  --color-danger:    #ee765d;   /* failed */
   --color-info:      #8a857c;   /* same as muted — info is neutral */
 
   /* ---------------------------------------------------------- space */

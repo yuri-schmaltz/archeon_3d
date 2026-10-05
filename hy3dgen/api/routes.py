@@ -11,13 +11,17 @@ from hy3dgen.api.config import SAVE_DIR
 from hy3dgen.api.deps import get_manager, get_mesh_processor
 from hy3dgen.api.manager import PriorityRequestManager
 from hy3dgen.api.schemas import (
+    CapabilitiesResponse,
     GenerationRequest,
     JobRequest,
     JobResponse,
+    JobStatus,
+    LibraryResponse,
     MeshOpsRequest,
 )
 from hy3dgen.meshops.processor import MeshProcessor
 from hy3dgen.monitoring import get_system_metrics
+from hy3dgen.version import __version__
 
 router = APIRouter(prefix="/v1", tags=["generation"])
 
@@ -35,6 +39,7 @@ MeshProcessorDep = Annotated[MeshProcessor, Depends(get_mesh_processor)]
 # Submission endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/jobs",
     response_model=JobResponse,
@@ -42,7 +47,7 @@ MeshProcessorDep = Annotated[MeshProcessor, Depends(get_mesh_processor)]
     summary="Submit a generation job (legacy polymorphic)",
     description=(
         "Accepts the discriminated-union body "
-        "`{ \"type\": \"text_to_3d\" | \"image_to_3d\" | \"multiview\" | \"texture_mesh\", ... }`. "
+        '`{ "type": "text_to_3d" | "image_to_3d" | "multiview" | "texture_mesh", ... }`. '
         "New code should use `POST /v1/generate` instead — the unified schema "
         "infers the mode from the fields you fill in."
     ),
@@ -78,21 +83,134 @@ async def submit_unified_job(
     return manager.get_job(uid)  # type: ignore[return-value]
 
 
+@router.get(
+    "/capabilities",
+    response_model=CapabilitiesResponse,
+    summary="Modes, models, presets and limits",
+    description=(
+        "Static + dynamic server state used by the UI to enable/disable "
+        "tabs, preselect presets and validate uploads before submitting. "
+        "Auth-gated like every other `/v1/*` route."
+    ),
+)
+async def capabilities(manager: ManagerDep) -> CapabilitiesResponse:
+    """Snapshot of what the server can do right now."""
+    snap = manager.capabilities()
+    snap["version"] = __version__
+    return CapabilitiesResponse(**snap)
+
+
 # ---------------------------------------------------------------------------
 # Query endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/jobs",
     response_model=list[JobResponse],
     summary="List all jobs currently in memory",
 )
-async def list_jobs(manager: ManagerDep) -> list[JobResponse]:
-    """List all jobs in memory (most recent first)."""
-    return sorted(
+async def list_jobs(
+    manager: ManagerDep,
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+    q: str | None = None,
+) -> list[JobResponse]:
+    """List jobs in memory (most recent first).
+
+    Pagination is offset-based for simplicity (the in-memory history
+    is bounded by ``max_history`` so cursors are not strictly
+    required). ``status`` filters by status name (``queued``,
+    ``processing``, ``completed``, ``failed``, ``cancelled``) and
+    ``q`` performs a case-insensitive substring search across
+    ``uid``, ``request_type`` and the stored request payload.
+    """
+    items = sorted(
         manager.jobs.values(),
         key=lambda j: j.created_at or "",
         reverse=True,
+    )
+    if status:
+        items = [j for j in items if j.status.value == status]
+    if q:
+        needle = q.lower()
+        items = [
+            j
+            for j in items
+            if needle in (j.uid or "").lower()
+            or needle in (j.request_type or "").lower()
+        ]
+    if offset < 0:
+        offset = 0
+    if limit <= 0 or limit > 200:
+        limit = 50
+    return items[offset : offset + limit]
+
+
+@router.get(
+    "/library",
+    response_model=LibraryResponse,
+    summary="Paginated library of jobs (memory + store)",
+)
+async def library(
+    manager: ManagerDep,
+    page: int = 1,
+    page_size: int = 20,
+    status: str | None = None,
+    q: str | None = None,
+) -> LibraryResponse:
+    """Paginated library view used by the front-end LibraryPage.
+
+    Combines the in-memory history and the SQLite store so the
+    library survives a server restart. ``page`` is 1-indexed;
+    ``page_size`` is clamped to ``[1, 100]``. The ``total`` count
+    is approximated for performance: capped at ``max_history`` to keep
+    the SQL query under a page.
+    """
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 20
+    offset = (page - 1) * page_size
+    # Prefer the persistent store when available; otherwise fall back
+    # to in-memory listing so dev mode (no SQLite) still has a working
+    # library.
+    if manager.store is not None:
+        # Apply the same filter the items query uses so ``total`` is
+        # the count of filtered records, not the unfiltered total.
+        status_enum = JobStatus(status) if status else None
+        items = await manager.store.list(
+            status=status_enum,
+            limit=page_size,
+            offset=offset,
+            q=q,
+        )
+        total = await manager.store.count_filtered(status=status_enum, q=q)
+    else:
+        all_items = sorted(
+            manager.jobs.values(),
+            key=lambda j: j.created_at or "",
+            reverse=True,
+        )
+        if status:
+            all_items = [j for j in all_items if j.status.value == status]
+        if q:
+            needle = q.lower()
+            all_items = [
+                j
+                for j in all_items
+                if needle in (j.uid or "").lower()
+                or needle in (j.request_type or "").lower()
+            ]
+        total = len(all_items)
+        items = all_items[offset : offset + page_size]
+    return LibraryResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(offset + len(items)) < total,
     )
 
 
@@ -103,18 +221,6 @@ async def list_jobs(manager: ManagerDep) -> list[JobResponse]:
 # Starlette match in registration order, not by path specificity, so
 # this ordering is load-bearing.
 # ---------------------------------------------------------------------------
-#
-# NOTE: FastAPI/Starlette match routes in registration order, not by
-# path specificity. ``/jobs/events`` (list-SSE) and ``/jobs/{uid}``
-# (catch-all) share the same prefix, so the catch-all currently wins
-# for ``/jobs/events`` (returns 404 "Job not found"). The per-job
-# ``/jobs/{uid}/events`` works because ``{uid}/events`` is two segments
-# and the catch-all only matches one. The list-SSE workaround is to
-# use the per-job event by reading from a known uid, or to use polling
-# via GET /v1/jobs. Fix: register ``/jobs/events`` BEFORE ``/jobs/{uid}``.
-# Tracked in PR #12 follow-up.
-# ---------------------------------------------------------------------------
-
 @router.get("/jobs/events", summary="SSE stream of the full job list")
 async def stream_jobs_events(
     request: Request,
@@ -137,14 +243,20 @@ async def stream_jobs_events(
                     break
                 try:
                     jobs: list[JobResponse] = await asyncio.wait_for(
-                        queue.get(), timeout=15.0,
+                        queue.get(),
+                        timeout=15.0,
                     )
                 except asyncio.TimeoutError:
                     # Keep-alive ping so proxies don't time out the connection.
                     yield {"event": "ping", "data": "{}"}
                     continue
+                # Slim payload: drop defaults and None so the wire format
+                # only carries fields the UI cares about.
                 payload = json.dumps(
-                    [j.model_dump(mode="json") for j in jobs],
+                    [
+                        j.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
+                        for j in jobs
+                    ],
                     default=str,
                 )
                 yield {"event": "list", "data": payload}
@@ -180,7 +292,7 @@ async def stream_job_events(
         if stored is None:
             raise HTTPException(status_code=404, detail="Job not found")
 
-    queue = manager.subscribe(uid)
+    queue = await manager.subscribe(uid)
 
     async def event_publisher() -> AsyncIterator[dict]:
         try:
@@ -192,18 +304,19 @@ async def stream_job_events(
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": "{}"}
                     continue
-                payload = job.model_dump(mode="json")
+                payload = job.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
                 yield {
                     "event": "status",
                     "id": job.uid,
                     "data": json.dumps(payload, default=str),
                 }
-                if str(job.status) in _TERMINAL_STATUSES:
+                if job.status.value in _TERMINAL_STATUSES:
                     break
         finally:
             manager.unsubscribe(uid, queue)
 
     return EventSourceResponse(event_publisher())
+
 
 @router.get(
     "/jobs/{uid}",
@@ -221,13 +334,17 @@ async def get_job_status(uid: str, manager: ManagerDep) -> JobResponse:
 @router.delete("/jobs/{uid}")
 async def cancel_job(uid: str, manager: ManagerDep) -> dict:
     """Request job cancellation. Idempotent — unknown uids return ok."""
-    manager.cancel_job(uid)
+    job = manager.get_job(uid)
+    if job is not None and job.status.value == "processing":
+        raise HTTPException(status_code=409, detail="A job already processing cannot be cancelled.")
+    await manager.cancel_job(uid)
     return {"status": "cancellation_requested", "uid": uid}
 
 
 # ---------------------------------------------------------------------------
 # System + post-processing
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/admin/stats",
@@ -258,9 +375,15 @@ async def admin_stats(manager: ManagerDep) -> dict:
 
 
 @router.get("/system/metrics", tags=["system"], summary="CPU/GPU/RAM usage")
-async def get_metrics() -> dict:
+async def get_metrics(manager: ManagerDep) -> dict:
     """Get system resource usage (CPU, GPU, RAM)."""
-    return get_system_metrics()
+    metrics: dict = await asyncio.to_thread(get_system_metrics)
+    metrics.update(
+        jobs_in_memory=len(manager.jobs),
+        jobs_in_store=await manager.store.count() if manager.store else 0,
+        persistence_enabled=manager.store is not None,
+    )
+    return metrics
 
 
 @router.post(
@@ -284,11 +407,11 @@ async def process_mesh(
         raise HTTPException(status_code=404, detail="Job result file not found")
 
     base_name = Path(job.file_path).stem
-    if request.action == 'decimate':
+    if request.action == "decimate":
         suffix = f"_decimate_{request.ratio:.2f}"
     else:
         suffix = f"_{request.action}"
-    output_path = f"{base_name}{suffix}.{request.format}"
+    output_path = str(Path(SAVE_DIR) / f"{base_name}{suffix}.{request.format}")
 
     try:
         loop = asyncio.get_running_loop()
