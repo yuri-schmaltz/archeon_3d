@@ -175,6 +175,5 @@ status: ## Hit the API health endpoint (requires API to be running).
 	@curl -sS http://$${ARCHEON_HOST:-127.0.0.1}:$${ARCHEON_PORT:-8081}/health | python3 -m json.tool || true
 
 .PHONY: openapi
-openapi: ## Dump the OpenAPI spec to openapi.json.
-	@curl -sS http://$${ARCHEON_HOST:-127.0.0.1}:$${ARCHEON_PORT:-8081}/openapi.json | python3 -m json.tool > openapi.json
-	@echo ">>> wrote openapi.json"
+openapi: ## Regenerate docs/API_DOCUMENTATION.md + openapi.json from the schema (no server needed).
+	@$(VENV)/bin/python scripts/gen_api_docs.py

@@ -67,6 +67,10 @@ class PriorityRequestManager:
     ):
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self.jobs: dict[str, JobResponse] = {}
+        # Set once the initial rehydrate pass has finished. ``/health``
+        # is a liveness probe and does not wait on it; ``/ready`` does.
+        self._ready_event = asyncio.Event()
+        self._rehydrate_task: asyncio.Task | None = None
         self.device = device
         self.model_path = model_path
         self.model_subfolder = model_subfolder
@@ -180,7 +184,7 @@ class PriorityRequestManager:
         )
         return count
 
-    async def start(self):
+    async def start(self, *, await_rehydrate: bool = True):
         """Start the background worker loop.
 
         When an ``InferenceService`` was injected at construction
@@ -189,9 +193,24 @@ class PriorityRequestManager:
         SSE. Otherwise we fall back to the embedded loop (the
         original behaviour preserved for unit tests that mock the
         worker directly).
+
+        When a store is attached, rehydration runs as a background task so a
+        large job history does not block readiness; pass
+        ``await_rehydrate=True`` to block instead (used by tests and
+        callers that need the store fully loaded when ``start()``
+        returns).
         """
         if self._worker_task is None:
-            await self.rehydrate()
+            if self.store is not None:
+                if await_rehydrate:
+                    await self.rehydrate()
+                    self._ready_event.set()
+                else:
+                    self._rehydrate_task = asyncio.create_task(
+                        self._rehydrate_then_signal(), name="api-rehydrate"
+                    )
+            else:
+                self._ready_event.set()
             if self.inference_service is not None:
                 await self.inference_service.start()
                 self._service_listener = self.inference_service.subscribe()
@@ -203,9 +222,48 @@ class PriorityRequestManager:
                 self._worker_task = asyncio.create_task(self._process_queue())
                 logger.info("PriorityRequestManager worker started.")
 
+    async def _rehydrate_then_signal(self) -> None:
+        """Run ``rehydrate()`` and always release readiness afterwards.
+
+        A failure here must not leave the server permanently unready,
+        so the flag is set even when rehydration raises.
+        """
+        try:
+            await self.rehydrate()
+        except Exception:
+            logger.exception("Rehydrate failed; continuing with in-memory-only state.")
+        finally:
+            self._ready_event.set()
+
+    @property
+    def ready(self) -> bool:
+        """True when there is nothing left to wait for.
+
+        With no persistent store there is nothing to rehydrate, so the
+        manager is ready as soon as it exists. Otherwise readiness flips
+        once the initial rehydrate pass finishes.
+        """
+        if self.store is None:
+            return True
+        return self._ready_event.is_set()
+
+    async def wait_ready(self, timeout: float | None = None) -> bool:
+        """Await readiness. Returns True if ready, False on timeout."""
+        try:
+            await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
     async def stop(self):
         """Stop the worker loop gracefully."""
         self._shutdown_event.set()
+        if self._rehydrate_task is not None:
+            self._rehydrate_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._rehydrate_task
+            self._rehydrate_task = None
+        self._ready_event.set()
         if self._worker_task:
             self._worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

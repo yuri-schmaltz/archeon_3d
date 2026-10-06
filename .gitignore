@@ -188,3 +188,7 @@ hy3dgen.local.env
 # Archeon launcher artefacts (regenerated on every ./launcher.sh run)
 .archeon_launcher.stamp
 .archeon_logs/
+
+# Generated from the FastAPI schema by `make openapi`.
+# docs/API_DOCUMENTATION.md is the tracked reference; the raw spec is not.
+openapi.json

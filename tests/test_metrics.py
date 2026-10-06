@@ -54,11 +54,12 @@ class TestOTelSpans:
         s.end()
 
     def test_start_span_returns_real_span_when_enabled(self, monkeypatch):
-        """ARCHEON_OTEL_ENABLED=true -> real OTel span (if OTel is installed)."""
+        """otel_enabled=true -> real OTel span (if OTel is installed)."""
+        from hy3dgen.api.config import settings
         from hy3dgen.api.metrics import _HAS_OTEL, _otel_enabled
         if not _HAS_OTEL:
             pytest.skip("opentelemetry not installed")
-        monkeypatch.setenv("ARCHEON_OTEL_ENABLED", "true")
+        monkeypatch.setattr(settings, "otel_enabled", True)
         assert _otel_enabled() is True
         from hy3dgen.api.metrics import end_span, start_span
         s = start_span("test.span", **{"k": "v"})

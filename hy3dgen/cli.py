@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
-DEFAULT_API_URL = os.environ.get("ARCHEON_API_URL", "http://127.0.0.1:9000")
+DEFAULT_API_URL = os.environ.get("ARCHEON_API_URL", "http://127.0.0.1:8081")
 DEFAULT_API_KEY = os.environ.get("ARCHEON_API_KEY") or None
 DEFAULT_TIMEOUT = 30
 POLL_INTERVAL = 2.0

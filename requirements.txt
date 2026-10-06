@@ -14,7 +14,10 @@ torchvision
 #ipdb
 omegaconf
 diso
-#sentencepiece
+# Required by the T5 tokenizer used by the text_to_3d text-to-image stage.
+# Without it transformers exposes T5Tokenizer as a Placeholder and diffusers
+# fails to load the HunyuanDiT pipeline.
+sentencepiece
 tqdm
 
 # Mesh Processing

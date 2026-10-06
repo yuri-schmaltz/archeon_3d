@@ -118,12 +118,12 @@ except ImportError:
 
 
 def _otel_enabled() -> bool:
-    """True iff OTel is installed AND the user opted in via env."""
+    """True iff OTel is installed AND the user opted in via settings."""
     if not _HAS_OTEL:
         return False
-    import os
+    from hy3dgen.api.config import settings
 
-    return os.environ.get("ARCHEON_OTEL_ENABLED", "").lower() in ("1", "true", "yes")
+    return settings.otel_enabled
 
 
 def start_span(name: str, **attrs: object):

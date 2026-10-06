@@ -95,6 +95,25 @@ class Settings(BaseSettings):
         default=False,
         description="Enable CORS credentials (cookies, auth headers).",
     )
+    url_signing_key: str | None = Field(
+        default=None,
+        description=(
+            "HMAC key for signed /files URLs. Falls back to ``api_key`` "
+            "when unset."
+        ),
+    )
+    rate_limit: str = Field(
+        default="120/minute",
+        description=(
+            "slowapi limit applied to /v1 routes. Empty string disables "
+            "rate limiting entirely."
+        ),
+    )
+    max_body_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=0,
+        description="Reject request bodies larger than this (0 disables the guard).",
+    )
 
     # -- Device + model -------------------------------------------------
     device: str = Field(default="cuda", description="cuda | cpu")
@@ -131,6 +150,13 @@ class Settings(BaseSettings):
     log_json: bool = Field(
         default=False,
         description="Emit logs as JSON (for Loki/Datadog/Cloud Logging).",
+    )
+    otel_enabled: bool = Field(
+        default=False,
+        description=(
+            "Export OpenTelemetry spans around inference. Requires the "
+            "``otel`` extra; without it the server stays on no-op spans."
+        ),
     )
 
     # -- Generation defaults ------------------------------------------
@@ -267,6 +293,7 @@ except Exception:
             log_level="INFO",
             log_file=None,
             log_json=False,
+            otel_enabled=False,
             default_seed=1234,
             default_steps=50,
             default_guidance=5.0,

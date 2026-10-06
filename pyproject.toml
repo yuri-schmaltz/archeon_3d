@@ -63,6 +63,8 @@ ml = [
     "opencv-python",
     "omegaconf",
     "diso",
+    # T5Tokenizer for the text_to_3d text-to-image stage.
+    "sentencepiece",
     "tqdm",
     "trimesh>=4",
     "Pillow",

@@ -145,7 +145,7 @@ class MeshRender():
             import custom_rasterizer as cr
             self.raster = cr
         else:
-            raise f'No raster named {self.raster_mode}'
+            raise ValueError(f'No raster named {self.raster_mode}')
 
         if camera_type == 'orth':
             self.ortho_scale = 1.2
@@ -160,7 +160,7 @@ class MeshRender():
                 0.01, 100.0
             )
         else:
-            raise f'No camera type {camera_type}'
+            raise ValueError(f'No camera type {camera_type}')
 
     def raster_rasterize(self, pos, tri, resolution, ranges=None, grad_db=True):
 
@@ -172,7 +172,7 @@ class MeshRender():
             rast_out = torch.cat((barycentric, findices.unsqueeze(-1)), dim=-1)
             rast_out = rast_out.unsqueeze(0)
         else:
-            raise f'No raster named {self.raster_mode}'
+            raise ValueError(f'No raster named {self.raster_mode}')
 
         return rast_out, rast_out_db
 
@@ -186,7 +186,7 @@ class MeshRender():
                 uv = uv.unsqueeze(0)
             textc = self.raster.interpolate(uv, findices, barycentric, uv_idx)
         else:
-            raise f'No raster named {self.raster_mode}'
+            raise ValueError(f'No raster named {self.raster_mode}')
 
         return textc, textd
 
@@ -194,9 +194,9 @@ class MeshRender():
                        boundary_mode='wrap', max_mip_level=None):
 
         if self.raster_mode == 'cr':
-            raise f'Texture is not implemented in cr'
+            raise NotImplementedError('Texture is not implemented in cr')
         else:
-            raise f'No raster named {self.raster_mode}'
+            raise ValueError(f'No raster named {self.raster_mode}')
 
         return color
 
@@ -206,7 +206,7 @@ class MeshRender():
             # Antialias has not been supported yet
             color = color
         else:
-            raise f'No raster named {self.raster_mode}'
+            raise ValueError(f'No raster named {self.raster_mode}')
 
         return color
 
@@ -752,7 +752,7 @@ class MeshRender():
             boundary_map = linear_grid_put_2d(
                 self.texture_size[1], self.texture_size[0], uv[..., [1, 0]], sketch_image)
         else:
-            raise f'No bake mode {method}'
+            raise ValueError(f'No bake mode {method}')
 
         return texture, cos_map, boundary_map
 

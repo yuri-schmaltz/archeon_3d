@@ -1,12 +1,11 @@
 import hmac
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -72,7 +71,11 @@ async def lifespan(app: FastAPI):
         store=store,
         inference_service=service,
     )
-    await app.state.manager.start()
+    # ``await_rehydrate=False`` keeps startup fast: the job store is
+    # restored in the background so a large history does not delay the
+    # first request. ``/health`` answers immediately; ``/ready`` stays 503
+    # until the in-memory job view matches the store.
+    await app.state.manager.start(await_rehydrate=False)
 
     # Initialize processor
     app.state.mesh_processor = MeshProcessor()
@@ -83,7 +86,12 @@ async def lifespan(app: FastAPI):
         await app.state.manager.stop()
 
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+limiter = Limiter(
+    key_func=get_remote_address,
+    # slowapi rejects an empty ``default_limits`` entry, so fall back to
+    # "no limit" explicitly when the operator opts out.
+    default_limits=[settings.rate_limit] if settings.rate_limit else [],
+)
 
 app = FastAPI(
     title="Archeon 3D Backend",
@@ -97,9 +105,8 @@ app = FastAPI(
 # ARCHEON_CORS_ORIGINS to a comma-separated allow-list and optionally
 # ARCHEON_ALLOW_CREDENTIALS=true.
 _cors_origins = get_cors_origins()
-_cors_allow_credentials = os.environ.get(
-    "ARCHEON_ALLOW_CREDENTIALS", "false"
-).lower() == "true" and _cors_origins != ["*"]
+# ``*`` + credentials is rejected by browsers, so force it off in that case.
+_cors_allow_credentials = settings.allow_credentials and _cors_origins != ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -117,6 +124,8 @@ async def health_check():
 
     Returns 200 with a body that includes:
     - ``status``: ``"ok"`` if the server is up (even if the model has not loaded yet).
+    - ``ready``: ``False`` while the initial job-store rehydrate is still
+      running. Use ``/ready`` when you need a readiness gate.
     - ``version``: server version.
     - ``model_loaded``: whether the inference worker has been initialized.
     - ``queue_size``: how many jobs are pending in the priority queue.
@@ -146,6 +155,7 @@ async def health_check():
         "version": app.version,
         "model_loaded": manager is not None and manager.worker is not None,
         "queue_size": queue_size,
+        "ready": manager is None or manager.ready,
         "jobs_in_memory": jobs_in_memory,
         "jobs_in_store": jobs_in_store,
         "persistence_enabled": store is not None,
@@ -158,6 +168,29 @@ async def health_check():
             "sse_list": True,
         },
     }
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness probe.
+
+    Unlike ``/health`` this returns 503 until the initial job-store
+    rehydrate has completed, so a load balancer or orchestrator can
+    hold traffic until the in-memory job view is consistent with the
+    persistent store.
+    """
+    manager = getattr(app.state, "manager", None)
+    if manager is None:
+        return {"status": "ready", "ready": True}
+    ready = manager.ready
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "rehydrating",
+            "ready": ready,
+            "jobs_in_memory": len(manager.jobs),
+        },
+    )
 
 
 # Make the limiter reachable from request handlers.
@@ -173,15 +206,18 @@ async def metrics_endpoint() -> Response:
 
 
 # Body size limit: bail out early if a request advertises a Content-Length
-# over the configured cap. Without this guard nginx (or the default uvicorn
+# over the configured cap (ARCHEON_MAX_BODY_BYTES, default 64 MiB to match
+# the nginx setting). Without this guard nginx (or the default uvicorn
 # limit) would buffer an unbounded payload into a temp file before we
 # even see the request, wasting resources and giving us a worse error
 # message to surface.
-_MAX_BODY_BYTES = 64 * 1024 * 1024  # 64 MiB matches the nginx setting
+_MAX_BODY_BYTES = settings.max_body_bytes or None
 
 
 @app.middleware("http")
 async def _enforce_body_size(request, call_next):
+    if _MAX_BODY_BYTES is None:
+        return await call_next(request)
     cl = request.headers.get("content-length")
     if cl is not None:
         try:
@@ -294,6 +330,23 @@ else:
     )
 
 
+def _reject_multi_worker(parser, workers: int) -> None:
+    """Refuse ``workers > 1``.
+
+    Inference is serialised through a single in-process priority queue and
+    the model lives in one process's VRAM. Extra uvicorn workers would each
+    hold their own queue and their own copy of the model, and would each
+    rehydrate the same SQLite file independently. The supported way to use
+    several GPUs is one process per GPU.
+    """
+    if workers != 1:
+        parser.error(
+            f"--workers {workers} is not supported. This backend serialises "
+            "inference through a single in-process queue and shares one GPU; "
+            "run one process per GPU instead."
+        )
+
+
 def main():
     """Console entry point declared in pyproject.toml: ``hy3dgen-api``.
 
@@ -320,15 +373,21 @@ def main():
     parser.add_argument(
         "--workers",
         type=int,
-        default=1,
-        help="Number of uvicorn workers. Use >1 only if the model is loaded lazily per worker.",
+        default=settings.workers,
+        help=(
+            "Number of uvicorn workers (overrides ARCHEON_WORKERS). "
+            "Only 1 is supported: each worker would own a separate "
+            "inference queue, its own copy of the model in VRAM, and "
+            "would rehydrate the same SQLite file independently."
+        ),
     )
     args = parser.parse_args()
+    _reject_multi_worker(parser, args.workers)
     uvicorn.run(
         "hy3dgen.api.server:app",
         host=args.host,
         port=args.port,
-        workers=args.workers,
+        workers=1,
     )
 
 

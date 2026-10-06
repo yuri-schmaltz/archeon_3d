@@ -162,7 +162,7 @@ class Hunyuan3DPaintPipeline:
             texture, ori_trust_map = self.render.fast_bake_texture(
                 project_textures, project_weighted_cos_maps)
         else:
-            raise f'no method {method}'
+            raise ValueError(f'no method {method}')
         return texture, ori_trust_map > 1E-8
 
     def texture_inpaint(self, texture, mask):

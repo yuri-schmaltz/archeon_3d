@@ -4,8 +4,12 @@ Memory pressure test: 10k jobs in the SQLite store + a full rehydrate.
 Inserts 10,000 jobs directly into the SQLite store, then starts a
 patched server pointed at the DB and measures:
 - Time to rehydrate 10k jobs
-- Latency of /v1/jobs (which returns 10k entries)
+- Latency of /v1/jobs (one page) while the full 10k sit in memory
+- That the whole history is still reachable through /v1/library
 - Memory profile of the response (size on the wire)
+
+Rehydration runs in the background, so the test gates on ``/ready``
+rather than ``/health``.
 """
 import asyncio
 import json
@@ -80,32 +84,28 @@ def _seed_10k(db_path: str):
 
 @pytest.fixture(scope="session")
 def _10k_server():
-    """Session-scoped fixture: spin up a server backed by 10k-job DB."""
-    import subprocess
-    import sys
-    from pathlib import Path
+    """Session-scoped fixture: seed a 10k-job DB and time a raw rehydrate."""
+    db = "/tmp/archeon-10k.db"
 
-    REPO_ROOT = Path(__file__).resolve().parent.parent
-    DB = "/tmp/archeon-10k.db"
-
-    print(f"\n[10k seed] starting (this takes a few seconds)...")
+    print("\n[10k seed] starting (this takes a few seconds)...")
     t0 = time.perf_counter()
-    _seed_10k(DB)
+    _seed_10k(db)
     seed_time = time.perf_counter() - t0
     print(f"[10k seed] inserted in {seed_time:.2f}s")
 
-    # Rehydrate time
+    # Raw restore_all() throughput, independent of the manager's
+    # bookkeeping (the server path is covered by test_10k_list_endpoint).
     t0 = time.perf_counter()
-    import hy3dgen.api.manager as mgr
     import hy3dgen.api.persistence
-    store = hy3dgen.api.persistence.JobStore(DB)
-    m = mgr.PriorityRequestManager(store=store)
-    # Rehydrate synchronously
+
+    store = hy3dgen.api.persistence.JobStore(db)
     count = 0
+
     async def _rehydrate():
         nonlocal count
         async for _job, _payload in store.restore_all():
             count += 1
+
     asyncio.run(_rehydrate())
     rehydrate_time = time.perf_counter() - t0
     print(f"[10k rehydrate] {count} jobs in {rehydrate_time*1000:.1f}ms "
@@ -121,7 +121,7 @@ def _10k_server():
         pass
 
     yield {
-        "db": DB,
+        "db": db,
         "seed_time": seed_time,
         "rehydrate_time": rehydrate_time,
         "job_count": count,
@@ -139,45 +139,52 @@ async def test_10k_rehydrate_speed(_10k_server):
 
 
 async def test_10k_list_endpoint(_10k_server):
-    """GET /v1/jobs with 10k jobs should respond under 200ms."""
+    """A full page of /v1/jobs should respond fast with 10k jobs loaded."""
     import subprocess
     import sys
     from pathlib import Path
 
-    REPO_ROOT = Path(__file__).resolve().parent.parent
-    DB = _10k_server["db"]
+    repo_root = Path(__file__).resolve().parent.parent
 
     env = os.environ.copy()
-    env["ARCHEON_JOB_DB"] = DB
+    env["ARCHEON_JOB_DB"] = _10k_server["db"]
     env["ARCHEON_HOST"] = "127.0.0.1"
     env["ARCHEON_PORT"] = "8767"
     env["ARCHEON_LOG_LEVEL"] = "error"
     env["ARCHEON_RATE_LIMIT"] = "false"
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONPATH"] = str(repo_root)
 
     proc = subprocess.Popen(
         [sys.executable, "docs/demo/server_patched.py"],
-        cwd=str(REPO_ROOT),
+        cwd=str(repo_root),
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
-        # Wait for server
-        async with httpx.AsyncClient(base_url="http://127.0.0.1:8767", timeout=30.0) as client:
-            for _ in range(50):
+        # Wait for the server to finish rehydrating. /health answers as
+        # soon as the process is up (rehydration runs in the background),
+        # so /ready is the gate that guarantees all 10k jobs are visible
+        # to /v1/jobs before we time that endpoint.
+        async with httpx.AsyncClient(base_url="http://127.0.0.1:8767", timeout=60.0) as client:
+            ready = False
+            for _ in range(300):
                 try:
-                    r = await client.get("/health")
+                    r = await client.get("/ready")
                     if r.status_code == 200:
+                        ready = True
                         break
                 except Exception:
-                    await asyncio.sleep(0.2)
-            else:
-                pytest.fail("server did not come up")
+                    pass
+                await asyncio.sleep(0.2)
+            if not ready:
+                pytest.fail("server did not become ready")
 
-            # Time /v1/jobs
+            # /v1/jobs is paginated (max 200 per page), so this measures the
+            # worst case: a full page while 10k jobs sit in memory. The
+            # complete 10k is verified through /v1/library's total.
             t0 = time.perf_counter()
-            r = await client.get("/v1/jobs")
+            r = await client.get("/v1/jobs", params={"limit": 200, "offset": 0})
             elapsed = time.perf_counter() - t0
             assert r.status_code == 200
             data = r.json()
@@ -188,8 +195,14 @@ async def test_10k_list_endpoint(_10k_server):
                 f"jobs={len(data)}, size={size_kb:.0f}KB"
             )
 
-            assert len(data) == 10_000
-            assert elapsed < 1.0, f"/v1/jobs took {elapsed:.2f}s for 10k jobs"
+            assert len(data) == 200, f"expected a full page of 200, got {len(data)}"
+            assert elapsed < 1.0, f"/v1/jobs took {elapsed:.2f}s with 10k jobs loaded"
+
+            # The whole history is reachable: /library reports the full
+            # count from the store without materialising every job.
+            lib = await client.get("/v1/library", params={"page_size": 1})
+            assert lib.status_code == 200
+            assert lib.json()["total"] == 10_000
     finally:
         proc.terminate()
         try:

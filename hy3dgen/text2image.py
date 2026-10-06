@@ -67,7 +67,12 @@ class HunyuanDiTPipeline:
     @torch.no_grad()
     def __call__(self, prompt, seed=0):
         seed_everything(seed)
-        generator = torch.Generator(device="cuda") #self.pipe.device
+        # Match the generator to where the pipeline actually runs. The pipeline
+        # is deliberately left on CPU (see the ``.to(device)`` note above) because
+        # HunyuanDiT does not fit in GPU memory alongside the shape model, so a
+        # hardcoded "cuda" generator fails with
+        # "Cannot generate a cpu tensor from a generator of type cuda".
+        generator = torch.Generator(device=self.pipe.device)
         generator = generator.manual_seed(int(seed))
         out_img = self.pipe(
             prompt=prompt[:60] + self.pos_txt,

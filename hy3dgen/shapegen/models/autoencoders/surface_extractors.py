@@ -45,7 +45,7 @@ class SurfaceExtractor:
         return grid_size, bbox_min, bbox_size
 
     def run(self, *args, **kwargs):
-        return NotImplementedError
+        raise NotImplementedError(f'{type(self).__name__} does not implement run()')
 
     def __call__(self, grid_logits, **kwargs):
         outputs = []
