@@ -21,8 +21,8 @@ from hy3dgen.api import signed_urls
 @pytest.fixture(autouse=True)
 def reset_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip both signing-key env vars between tests so we get a known state."""
-    monkeypatch.delenv("ARCHEON_URL_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+    monkeypatch.delenv("POLYFORGE_URL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
 
 
 def test_no_key_returns_none() -> None:
@@ -31,7 +31,7 @@ def test_no_key_returns_none() -> None:
 
 
 def test_round_trip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     url = signed_urls.build_signed_url("abc.glb", ttl_seconds=60)
     assert url is not None
     assert url.startswith("/files/abc.glb?")
@@ -40,20 +40,20 @@ def test_round_trip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_dedicated_signing_key_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "api-key")
-    monkeypatch.setenv("ARCHEON_URL_SIGNING_KEY", "url-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "api-key")
+    monkeypatch.setenv("POLYFORGE_URL_SIGNING_KEY", "url-key")
     # Token minted with URL_SIGNING_KEY must NOT verify under the API key alone.
     url = signed_urls.build_signed_url("abc.glb", ttl_seconds=60)
     assert url is not None
     qs = url.split("?", 1)[1]
-    monkeypatch.delenv("ARCHEON_URL_SIGNING_KEY")
+    monkeypatch.delenv("POLYFORGE_URL_SIGNING_KEY")
     assert signed_urls.verify_signed_url("abc.glb", qs) is False
-    monkeypatch.setenv("ARCHEON_URL_SIGNING_KEY", "url-key")
+    monkeypatch.setenv("POLYFORGE_URL_SIGNING_KEY", "url-key")
     assert signed_urls.verify_signed_url("abc.glb", qs) is True
 
 
 def test_path_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     url = signed_urls.build_signed_url("abc.glb", ttl_seconds=60)
     qs = url.split("?", 1)[1]
     # Same token must NOT work for a different file
@@ -61,7 +61,7 @@ def test_path_binding(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_expired_token_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     # Mint with a tiny TTL, then jump the clock past the expiry.
     now = int(time.time())
     monkeypatch.setattr(signed_urls.time, "time", lambda: now)
@@ -73,7 +73,7 @@ def test_expired_token_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_tampered_mac_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     url = signed_urls.build_signed_url("abc.glb", ttl_seconds=60)
     # Flip a character in the MAC payload.
     prefix, _token, rest = url.split("?", 1)[1].partition("&")
@@ -85,14 +85,14 @@ def test_tampered_mac_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_malformed_query_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     assert signed_urls.verify_signed_url("abc.glb", "") is False
     assert signed_urls.verify_signed_url("abc.glb", "foo=bar") is False
     assert signed_urls.verify_signed_url("abc.glb", "token=v1.x&exp=notanumber") is False
 
 
 def test_ttl_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     url = signed_urls.build_signed_url("abc.glb", ttl_seconds=10**9)
     qs = url.split("?", 1)[1]
     # Even though we asked for a millennium, the cap kicks in.

@@ -1,4 +1,4 @@
-"""Archeon 3D HTTP API layer.
+"""PolyForge HTTP API layer.
 
 Subpackage holding the FastAPI server, request contracts, the priority
 job manager, SQLite persistence, auth and observability helpers.

@@ -17,7 +17,7 @@ from hy3dgen.meshops.processor import MeshProcessor
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("demo")
-log.warning("DEMO Archeon API starting")
+log.warning("DEMO PolyForge API starting")
 
 @asynccontextmanager
 async def lifespan(app):
@@ -32,7 +32,7 @@ async def lifespan(app):
     await app.state.manager.stop()
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
-app = FastAPI(title="Archeon DEMO", version="1.0.1-demo", lifespan=lifespan)
+app = FastAPI(title="PolyForge DEMO", version="1.0.1-demo", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

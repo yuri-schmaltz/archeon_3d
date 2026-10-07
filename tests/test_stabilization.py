@@ -29,7 +29,7 @@ def app_for(manager):
 
 
 async def test_http_cancel_persists_and_completed_sse_closes(tmp_path, monkeypatch):
-    monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+    monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
     store = JobStore(str(tmp_path / "jobs.db"))
     manager = PriorityRequestManager(device="cpu", store=store)
     uid = await manager.submit_job(TextTo3DRequest(prompt="chair"), str(tmp_path))
@@ -53,7 +53,7 @@ async def test_http_cancel_persists_and_completed_sse_closes(tmp_path, monkeypat
 
 
 async def test_processing_job_cannot_be_cancelled_and_auth_is_enforced(monkeypatch):
-    monkeypatch.setenv("ARCHEON_API_KEY", "test-secret")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "test-secret")
     manager = PriorityRequestManager(device="cpu")
     manager.jobs["active"] = JobResponse(
         uid="active", status=JobStatus.PROCESSING, created_at=utc_now()
@@ -184,10 +184,10 @@ def test_dotenv_key_and_explicit_empty_override(tmp_path, monkeypatch):
     from hy3dgen.api.auth import get_api_key
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
-    (tmp_path / ".env").write_text("ARCHEON_API_KEY=dotenv-test-key\n")
+    monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("POLYFORGE_API_KEY=dotenv-test-key\n")
     assert get_api_key() == "dotenv-test-key"
-    monkeypatch.setenv("ARCHEON_API_KEY", "")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "")
     assert get_api_key() is None
 
 
@@ -213,12 +213,12 @@ def test_api_startup_applies_environment_overrides(tmp_path):
 
     env = {
         **os.environ,
-        "ARCHEON_SAVE_DIR": str(tmp_path / "outputs"),
-        "ARCHEON_JOB_DB": "",
-        "ARCHEON_DEVICE": "cpu",
-        "ARCHEON_MAX_HISTORY": "12",
-        "ARCHEON_MODEL": "test/model",
-        "ARCHEON_MODEL_SUBFOLDER": "test-folder",
+        "POLYFORGE_SAVE_DIR": str(tmp_path / "outputs"),
+        "POLYFORGE_JOB_DB": "",
+        "POLYFORGE_DEVICE": "cpu",
+        "POLYFORGE_MAX_HISTORY": "12",
+        "POLYFORGE_MODEL": "test/model",
+        "POLYFORGE_MODEL_SUBFOLDER": "test-folder",
     }
     result = subprocess.run(
         [

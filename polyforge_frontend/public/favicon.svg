@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#0d0c0a" rx="8"/>
+  <!-- hexagon forge -->
+  <path d="M32 10 L51 21 L51 43 L32 54 L13 43 L13 21 Z" fill="none" stroke="#e8e4dc" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- low-poly triangulation forming a P -->
+  <path d="M24 42 L24 22 L38 22 L38 32 L24 32" fill="none" stroke="#e8e4dc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 32 L38 22 M24 22 L32 32" stroke="#3a3630" stroke-width="1.2"/>
+  <!-- forge spark -->
+  <circle cx="42" cy="40" r="4.5" fill="#ff6a00"/>
+</svg>

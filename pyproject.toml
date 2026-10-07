@@ -5,15 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hy3dgen"
 dynamic = ["version"]
-description = "Hunyuan3D 2.0 with the Archeon API, frontend, persistence, and real-time streaming layer."
-readme = "ARCHEON_README.md"
+description = "PolyForge — do prompt ao polígono. Hunyuan3D 2.0 with API, frontend, persistence, and real-time streaming."
+readme = "POLYFORGE_README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.13"
 authors = [
-    { name = "Archeon contributors" },
+    { name = "PolyForge contributors" },
     { name = "Tencent Hunyuan3D team", email = "3d@tencent.com" },
 ]
-keywords = ["3d", "mesh", "diffusion", "hunyuan", "archeon", "sse", "fastapi"]
+keywords = ["3d", "mesh", "diffusion", "hunyuan", "polyforge", "sse", "fastapi"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: GPU :: NVIDIA CUDA",
@@ -32,7 +32,7 @@ classifiers = [
 
 # Runtime dependencies. The full list (including heavy ML deps) lives
 # in ``requirements.txt``; we keep the API surface dependencies here so
-# `pip install -e .` works for someone who only wants the Archeon API
+# `pip install -e .` works for someone who only wants the PolyForge API
 # server (no model loading).
 dependencies = [
     "fastapi>=0.110",
@@ -57,8 +57,10 @@ dependencies = [
 ml = [
     "torch>=2.0",
     "torchvision",
-    "transformers>=4.50",
-    "diffusers",
+    # Keep in sync with requirements.txt: diffusers 0.39 needs
+    # transformers >=4.50, while transformers 5.x breaks weight loading.
+    "transformers>=4.50,<5",
+    "diffusers>=0.39,<0.40",
     "einops",
     "opencv-python",
     "omegaconf",
@@ -100,11 +102,16 @@ test = [
     "Pillow",
     "trimesh>=4",
 ]
+otel = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+]
 
 [project.urls]
 Homepage = "https://github.com/yuri-schmaltz/my-hunyuan-3D"
 Issues = "https://github.com/yuri-schmaltz/my-hunyuan-3D/issues"
-"Archeon docs" = "https://github.com/yuri-schmaltz/my-hunyuan-3D/blob/main/ARCHEON_README.md"
+"PolyForge docs" = "https://github.com/yuri-schmaltz/my-hunyuan-3D/blob/main/POLYFORGE_README.md"
 
 # ---------------------------------------------------------------------------
 # Entry points
@@ -113,6 +120,9 @@ Issues = "https://github.com/yuri-schmaltz/my-hunyuan-3D/issues"
 hy3dgen-api = "hy3dgen.api.server:main"
 hy3dgen-cli = "hy3dgen.cli:main"
 hy3dgen-launcher = "launcher:main"
+polyforge-api = "hy3dgen.api.server:main"
+polyforge-cli = "hy3dgen.cli:main"
+polyforge = "hy3dgen.cli:main"
 
 # ---------------------------------------------------------------------------
 # Tooling configuration (mypy / pytest)
@@ -163,7 +173,7 @@ extend-exclude = [
     "build",
     "dist",
     ".venv",
-    "archeon_frontend",
+    "polyforge_frontend",
     "examples",
     "tests/fixtures",
 ]

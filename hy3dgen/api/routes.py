@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -22,12 +23,35 @@ from hy3dgen.api.schemas import (
     LibraryResponse,
     MeshOpsRequest,
 )
+from hy3dgen.inference import DEFAULT_T2I_MODEL
 from hy3dgen.meshops.processor import MeshProcessor
 from hy3dgen.monitoring import get_system_metrics
 from hy3dgen.version import __version__
 
-router = APIRouter(prefix="/v1", tags=["generation"])
 
+class RateLimitedRoute(APIRoute):
+    """APIRoute that enforces the app's SlowAPI default limits.
+
+    SlowAPI's stock middleware cannot see routes inside an
+    ``include_router()`` group on FastAPI 0.142 (it resolves the group
+    wrapper instead of the endpoint), so defaults would otherwise stay
+    inert. Checking here keeps every ``/v1`` endpoint covered without
+    requiring a ``Request`` parameter on each handler.
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def _rate_limited_handler(request: Request):
+            limiter = getattr(request.app.state, "limiter", None)
+            if limiter is not None and limiter.enabled:
+                limiter._check_request_limit(request, self.endpoint, False)
+            return await handler(request)
+
+        return _rate_limited_handler
+
+
+router = APIRouter(prefix="/v1", tags=["generation"], route_class=RateLimitedRoute)
 # Terminal job states that should close the SSE stream.
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -72,6 +96,8 @@ class ModelStatusResponse(BaseModel):
     model: str
     subfolder: str | None = None
     device: str
+    text_to_image_loaded: bool = False
+    text_to_image_model: str | None = None
     last_error: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -111,9 +137,10 @@ async def submit_job(
     description=(
         "All input fields are optional at the type level; the backend infers "
         "the generation mode from what's filled in. See `GenerationRequest` "
-        "for the dispatch rules. Common params (`seed`, `steps`, `guidance`, "
-        "`octree_resolution`, `format`, `face_count`, `texture`, "
-        "`remove_background`) are shared across all modes."
+        "for the dispatch rules. `seed`, `steps`, `guidance`, "
+        "`octree_resolution`, `format`, `face_count`, `texture`, and "
+        "`remove_background` control the 3D/mesh reconstruction; only "
+        "`seed` is also passed to the fixed `text_to_3d` reference-image stage."
     ),
 )
 async def submit_unified_job(
@@ -198,11 +225,11 @@ async def start_model_load(manager: ManagerDep) -> ModelLoadResponse:
     summary="Current state of the inference model",
 )
 async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
-    """Return whether the shape model is loaded and where the load is.
+    """Return whether the shape and text-to-image models are loaded.
 
-    ``loaded`` flips to ``true`` once ``ModelWorker.generate`` has
-    materialised the shape pipeline (which is what
-    ``POST /v1/models/load`` triggers eagerly).
+    ``loaded`` tracks the shape pipeline only. ``text_to_image_loaded``
+    tracks the separate HunyuanDiT reference-image pipeline, which remains
+    lazy until the first ``text_to_3d`` job.
     """
 
     # The worker may live on the manager (legacy) or on the
@@ -213,11 +240,16 @@ async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
     if service is not None and getattr(service, "_worker", None) is not None:
         worker = service._worker
     model_path = service.model_path if service is not None else manager.model_path
-    subfolder = (
-        service.model_subfolder if service is not None else manager.model_subfolder
-    )
+    subfolder = service.model_subfolder if service is not None else manager.model_subfolder
     device = service.device if service is not None else manager.device
     pipeline = getattr(worker, "pipeline", None) if worker is not None else None
+    t2i_pipeline = getattr(worker, "pipeline_t2i", None) if worker is not None else None
+    configured_t2i = None
+    if service is not None:
+        configured_t2i = service.t2i_model
+    if configured_t2i is None:
+        configured_t2i = manager.t2i_model
+    t2i_model = getattr(worker, "t2i_model_path", None) or configured_t2i or DEFAULT_T2I_MODEL
     last_error = manager.last_error
     if service is not None and service.last_error is not None:
         last_error = service.last_error
@@ -227,6 +259,8 @@ async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
         model=model_path,
         subfolder=subfolder,
         device=device,
+        text_to_image_loaded=t2i_pipeline is not None,
+        text_to_image_model=t2i_model,
         last_error=last_error,
     )
 
@@ -269,8 +303,7 @@ async def list_jobs(
         items = [
             j
             for j in items
-            if needle in (j.uid or "").lower()
-            or needle in (j.request_type or "").lower()
+            if needle in (j.uid or "").lower() or needle in (j.request_type or "").lower()
         ]
     if offset < 0:
         offset = 0
@@ -331,8 +364,7 @@ async def library(
             all_items = [
                 j
                 for j in all_items
-                if needle in (j.uid or "").lower()
-                or needle in (j.request_type or "").lower()
+                if needle in (j.uid or "").lower() or needle in (j.request_type or "").lower()
             ]
         total = len(all_items)
         items = all_items[offset : offset + page_size]
@@ -496,7 +528,7 @@ async def get_signed_download_url(
 
     The token is bound to the file's basename, scoped to a TTL (default
     1 h, capped at 24 h), and verifiable by ``_AuthStaticFiles``
-    without leaking ``ARCHEON_API_KEY``. Falls back to 503 when no
+    without leaking ``POLYFORGE_API_KEY``. Falls back to 503 when no
     signing key is configured so callers know to use the legacy
     header-based path instead.
     """

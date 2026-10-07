@@ -1,5 +1,5 @@
 # =============================================================================
-# Archeon 3D — full stack
+# PolyForge — full stack (Do prompt ao polígono)
 # =============================================================================
 # Brings up:
 #   - api      : the FastAPI backend (with the Hunyuan3D model worker)
@@ -8,52 +8,52 @@
 #
 # Quick start:
 #   cp .env.example .env
-#   # edit .env to set ARCHEON_API_KEY, ARCHEON_DEVICE, etc.
+#   # edit .env to set POLYFORGE_API_KEY, POLYFORGE_DEVICE, etc.
 #   docker compose up --build
 # =============================================================================
 
-name: archeon
+name: polyforge
 
 x-backend-env: &backend-env
-  ARCHEON_HOST: 0.0.0.0
-  ARCHEON_PORT: 8081
+  POLYFORGE_HOST: 0.0.0.0
+  POLYFORGE_PORT: 8081
   # If you have an NVIDIA GPU, the api service uses the cuda base image.
-  # On CPU-only hosts, set ARCHEON_DEVICE=cpu (or rely on the env var).
-  ARCHEON_DEVICE: ${ARCHEON_DEVICE:-cuda}
-  ARCHEON_MODEL: ${ARCHEON_MODEL:-tencent/Hunyuan3D-2}
-  ARCHEON_MODEL_SUBFOLDER: ${ARCHEON_MODEL_SUBFOLDER:-hunyuan3d-dit-v2-0}
-  ARCHEON_MULTIVIEW_MODEL: ${ARCHEON_MULTIVIEW_MODEL:-tencent/Hunyuan3D-2mv}
-  ARCHEON_MULTIVIEW_SUBFOLDER: ${ARCHEON_MULTIVIEW_SUBFOLDER:-hunyuan3d-dit-v2-mv}
-  ARCHEON_MAX_HISTORY: ${ARCHEON_MAX_HISTORY:-1000}
-  ARCHEON_MAX_AGE_SECONDS: ${ARCHEON_MAX_AGE_SECONDS:-86400}
+  # On CPU-only hosts, set POLYFORGE_DEVICE=cpu (or rely on the env var).
+  POLYFORGE_DEVICE: ${POLYFORGE_DEVICE:-cuda}
+  POLYFORGE_MODEL: ${POLYFORGE_MODEL:-tencent/Hunyuan3D-2}
+  POLYFORGE_MODEL_SUBFOLDER: ${POLYFORGE_MODEL_SUBFOLDER:-hunyuan3d-dit-v2-0}
+  POLYFORGE_MULTIVIEW_MODEL: ${POLYFORGE_MULTIVIEW_MODEL:-tencent/Hunyuan3D-2mv}
+  POLYFORGE_MULTIVIEW_SUBFOLDER: ${POLYFORGE_MULTIVIEW_SUBFOLDER:-hunyuan3d-dit-v2-mv}
+  POLYFORGE_MAX_HISTORY: ${POLYFORGE_MAX_HISTORY:-1000}
+  POLYFORGE_MAX_AGE_SECONDS: ${POLYFORGE_MAX_AGE_SECONDS:-86400}
   # API key (set in .env). When empty, auth is disabled (dev only).
-  ARCHEON_API_KEY: ${ARCHEON_API_KEY:-}
-  ARCHEON_CORS_ORIGINS: ${ARCHEON_CORS_ORIGINS:-http://localhost}
+  POLYFORGE_API_KEY: ${POLYFORGE_API_KEY:-}
+  POLYFORGE_CORS_ORIGINS: ${POLYFORGE_CORS_ORIGINS:-http://localhost}
   # Where generated meshes go (mounted as a volume so they survive restarts).
-  ARCHEON_SAVE_DIR: /data/meshes
+  POLYFORGE_SAVE_DIR: /data/meshes
   # SQLite-backed persistence.
-  ARCHEON_JOB_DB: /data/state/jobs.db
+  POLYFORGE_JOB_DB: /data/state/jobs.db
   # Optional file log.
-  ARCHEON_LOG_FILE: /data/logs/archeon-api.log
-  ARCHEON_LOG_LEVEL: ${ARCHEON_LOG_LEVEL:-INFO}
+  POLYFORGE_LOG_FILE: /data/logs/polyforge-api.log
+  POLYFORGE_LOG_LEVEL: ${POLYFORGE_LOG_LEVEL:-INFO}
 
 services:
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: archeon-api:local
-    container_name: archeon-api
+    image: polyforge-api:local
+    container_name: polyforge-api
     restart: unless-stopped
     environment:
       <<: *backend-env
     volumes:
-      - archeon-data:/data
+      - polyforge-data:/data
       # If you already have models downloaded, mount your HF cache here.
       - ${HF_HOME:-./.hf-cache}:/root/.cache/huggingface
     ports:
       # Expose the API directly too (useful for curl / external clients).
-      - "${ARCHEON_PORT:-8081}:8081"
+      - "${POLYFORGE_PORT:-8081}:8081"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health').status == 200 else 1)"]
       interval: 30s
@@ -74,8 +74,8 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-}
-    image: archeon-frontend:local
-    container_name: archeon-frontend
+    image: polyforge-frontend:local
+    container_name: polyforge-frontend
     restart: unless-stopped
     depends_on:
       api:
@@ -86,7 +86,7 @@ services:
   # Optional: TLS terminator. Uncomment to enable.
   # caddy:
   #   image: caddy:2-alpine
-  #   container_name: archeon-caddy
+  #   container_name: polyforge-caddy
   #   restart: unless-stopped
   #   ports:
   #     - "80:80"
@@ -99,7 +99,7 @@ services:
   #     - frontend
 
 volumes:
-  archeon-data:
+  polyforge-data:
     # Persistent state (meshes, SQLite DB, logs).
   # caddy-data:
   # caddy-config:

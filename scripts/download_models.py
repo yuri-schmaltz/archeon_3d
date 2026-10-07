@@ -1,21 +1,29 @@
-"""Pre-download the Archeon inference models.
+"""Pre-download the PolyForge inference models.
 
 Useful for users who want to populate the HF cache ahead of time
 (e.g. on a slow connection, or to warm a container image). The
-default Archeon config loads models lazily on the first job; this
+default PolyForge config loads models lazily on the first job; this
 script does the download step in isolation without spinning up the
 shape pipeline.
 
 Usage:
-    python scripts/download_models.py [--scope shape|multiview|tex|all] [--device cpu|cuda]
+    python scripts/download_models.py [--scope shape|multiview|tex|t2i|all] [--device cpu|cuda]
 
 Environment variables:
-    ARCHEON_MODEL              (default: tencent/Hunyuan3D-2)
-    ARCHEON_MODEL_SUBFOLDER    (default: hunyuan3d-dit-v2-0)
-    ARCHEON_MULTIVIEW_MODEL    (default: tencent/Hunyuan3D-2mv)
-    ARCHEON_MULTIVIEW_SUBFOLDER (default: hunyuan3d-dit-v2-mv)
-    ARCHEON_TEX_MODEL_PATH     (default: tencent/Hunyuan3D-2)
-    ARCHEON_MINI_MODEL         (default: tencent/Hunyuan3D-2mini)
+    POLYFORGE_MODEL              (default: tencent/Hunyuan3D-2)
+    POLYFORGE_MODEL_SUBFOLDER    (default: hunyuan3d-dit-v2-0)
+    POLYFORGE_MULTIVIEW_MODEL    (default: tencent/Hunyuan3D-2mv)
+    POLYFORGE_MULTIVIEW_SUBFOLDER (default: hunyuan3d-dit-v2-mv)
+    POLYFORGE_TEX_MODEL_PATH     (default: tencent/Hunyuan3D-2)
+    POLYFORGE_MINI_MODEL         (default: tencent/Hunyuan3D-2mini)
+    POLYFORGE_T2I_MODEL          (default: Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled)
+
+Scopes:
+    shape      shape model + mini-turbo variant (~12 GB)
+    multiview  4-view shape model (~8 GB)
+    tex        texture weights, full repo (largest download)
+    t2i        text-to-image reference model for text_to_3d (~15 GB)
+    all        everything above (tens of GB; prefer a big disk via HF_HOME)
 
 The script is a no-op if ``torch`` / ``huggingface_hub`` aren't
 installed, so it stays safe to ship in the repo.
@@ -62,13 +70,13 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scope",
-        choices=("shape", "multiview", "tex", "all"),
+        choices=("shape", "multiview", "tex", "t2i", "all"),
         default="all",
-        help="Which models to download. ``all`` covers the four models the API may use.",
+        help="Which models to download. ``all`` covers every model the API may use.",
     )
     parser.add_argument(
         "--device",
-        default=os.environ.get("ARCHEON_DEVICE", "cuda"),
+        default=os.environ.get("POLYFORGE_DEVICE", "cuda"),
         help="Device hint (informational; weights aren't loaded here).",
     )
     args = parser.parse_args(argv)
@@ -80,12 +88,16 @@ def main(argv: list[str]) -> int:
 
     print(f"[info] device hint: {args.device} (weights are downloaded but not loaded)")
 
-    shape_model = os.environ.get("ARCHEON_MODEL", "tencent/Hunyuan3D-2")
-    shape_sub = os.environ.get("ARCHEON_MODEL_SUBFOLDER", "hunyuan3d-dit-v2-0")
-    mv_model = os.environ.get("ARCHEON_MULTIVIEW_MODEL", "tencent/Hunyuan3D-2mv")
-    mv_sub = os.environ.get("ARCHEON_MULTIVIEW_SUBFOLDER", "hunyuan3d-dit-v2-mv")
-    tex_model = os.environ.get("ARCHEON_TEX_MODEL_PATH", "tencent/Hunyuan3D-2")
-    mini_model = os.environ.get("ARCHEON_MINI_MODEL", "tencent/Hunyuan3D-2mini")
+    shape_model = os.environ.get("POLYFORGE_MODEL", "tencent/Hunyuan3D-2")
+    shape_sub = os.environ.get("POLYFORGE_MODEL_SUBFOLDER", "hunyuan3d-dit-v2-0")
+    mv_model = os.environ.get("POLYFORGE_MULTIVIEW_MODEL", "tencent/Hunyuan3D-2mv")
+    mv_sub = os.environ.get("POLYFORGE_MULTIVIEW_SUBFOLDER", "hunyuan3d-dit-v2-mv")
+    tex_model = os.environ.get("POLYFORGE_TEX_MODEL_PATH", "tencent/Hunyuan3D-2")
+    mini_model = os.environ.get("POLYFORGE_MINI_MODEL", "tencent/Hunyuan3D-2mini")
+    t2i_model = os.environ.get(
+        "POLYFORGE_T2I_MODEL",
+        "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled",
+    )
 
     if args.scope in ("shape", "all"):
         _snapshot(shape_model, shape_sub)
@@ -96,6 +108,10 @@ def main(argv: list[str]) -> int:
         # Texture pipeline uses the main model; download its subfolder
         # under the same repo (no separate subfolder needed).
         _snapshot(tex_model, None)
+    if args.scope in ("t2i", "all"):
+        # Reference-image model for text_to_3d. Without it the first
+        # text_to_3d job pays the ~15 GB download on the request path.
+        _snapshot(t2i_model, None)
 
     print("[done] All requested models are in the HF cache.")
     return 0

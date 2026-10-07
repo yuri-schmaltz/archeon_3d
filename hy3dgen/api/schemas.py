@@ -1,7 +1,30 @@
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from hy3dgen.api import config as config_module
+
+
+def _setting_default(name: str):
+    """Read an operator-configurable generation default at validation time."""
+
+    return lambda: getattr(config_module.settings, name)
+
+
+def _setting_field(name: str, **kwargs: Any):
+    """Declare a settings-backed default without freezing it in validation.
+
+    ``default_factory`` keeps the runtime value dynamic when operators change
+    ``POLYFORGE_DEFAULT_*`` and restart. ``json_schema_extra`` preserves the
+    startup default in OpenAPI/docs.
+    """
+
+    return Field(
+        default_factory=_setting_default(name),
+        json_schema_extra={"default": getattr(config_module.settings, name)},
+        **kwargs,
+    )
 
 
 class JobStatus(str, Enum):
@@ -21,11 +44,27 @@ class MeshOpsAction(str, Enum):
 class BaseGenerationRequest(BaseModel):
     """Common parameters for all generation types."""
 
-    seed: int = Field(1234, description="Random seed", examples=[1234])
-    steps: int = Field(50, ge=1, le=100, description="Denoising steps", examples=[50, 5])
-    guidance: float = Field(5.0, ge=1.0, le=20.0, description="Guidance scale", examples=[5.0, 7.5])
-    octree_resolution: int = Field(
-        256,
+    seed: int = _setting_field(
+        "default_seed",
+        description="Random seed for the generated 3D output. For text_to_3d it also seeds the reference image.",
+        examples=[1234],
+    )
+    steps: int = _setting_field(
+        "default_steps",
+        ge=1,
+        le=100,
+        description="Denoising steps for shape reconstruction. The text_to_3d reference image uses a fixed step count.",
+        examples=[50, 5],
+    )
+    guidance: float = _setting_field(
+        "default_guidance",
+        ge=1.0,
+        le=20.0,
+        description="Guidance scale for shape reconstruction. It does not change the fixed text_to_3d reference-image settings.",
+        examples=[5.0, 7.5],
+    )
+    octree_resolution: int = _setting_field(
+        "default_octree",
         ge=16,
         le=512,
         description="Voxel resolution",
@@ -37,8 +76,8 @@ class BaseGenerationRequest(BaseModel):
         examples=["glb"],
     )
     texture: bool = Field(False, description="Generate texture?", examples=[False, True])
-    face_count: int = Field(
-        40000,
+    face_count: int = _setting_field(
+        "default_face_count",
         ge=100,
         le=1000000,
         description="Target face count for reduction",
@@ -53,7 +92,7 @@ class TextTo3DRequest(BaseGenerationRequest):
     prompt: str = Field(
         ...,
         min_length=1,
-        description="Text prompt",
+        description="Text prompt. The reference-image stage uses its first 60 characters plus a fixed style suffix.",
         examples=["a cute cat with white fur"],
     )
 
@@ -171,8 +210,7 @@ class MeshOpsRequest(BaseModel):
     only_watertight: bool = Field(
         False,
         description=(
-            "For separate: keep only watertight components (recommended "
-            "for 3D-printing workflows)."
+            "For separate: keep only watertight components (recommended for 3D-printing workflows)."
         ),
         examples=[False, True],
     )
@@ -227,10 +265,11 @@ class GenerationRequest(BaseModel):
         3. ``image`` (text may also be set)    -> image_to_3d
         4. ``text`` (or text+image)            -> text_to_3d
 
-    Common parameters (``seed``, ``steps``, ``guidance``, etc.) are
-    applied regardless of mode. ``texture`` is honoured for
-    ``text_to_3d`` and ``image_to_3d``; for ``texture_mesh`` it is
-    forced to True.
+    Common parameters (``seed``, ``steps``, ``guidance``, etc.) control
+    the final 3D/mesh reconstruction. ``seed`` is also passed to the
+    ``text_to_3d`` reference-image stage; that stage otherwise uses fixed
+    diffusion settings. ``texture`` is honoured for ``text_to_3d`` and
+    ``image_to_3d``; for ``texture_mesh`` it is forced to True.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -238,7 +277,7 @@ class GenerationRequest(BaseModel):
     # --- Inputs (any combination, validated below) -------------------
     text: str | None = Field(
         None,
-        description="Text prompt or guidance. Required for text_to_3d.",
+        description="Text prompt or guidance. Required for text_to_3d. The reference-image stage uses its first 60 characters plus a fixed style suffix.",
         examples=["a small red cube"],
     )
     image: str | None = Field(
@@ -255,11 +294,26 @@ class GenerationRequest(BaseModel):
     )
 
     # --- Common generation parameters -------------------------------
-    seed: int = Field(1234, description="Random seed", examples=[1234])
-    steps: int = Field(50, ge=1, le=100, description="Denoising steps", examples=[50])
-    guidance: float = Field(5.0, ge=1.0, le=20.0, description="Guidance scale")
-    octree_resolution: int = Field(
-        256,
+    seed: int = _setting_field(
+        "default_seed",
+        description="Random seed for the generated 3D output. For text_to_3d it also seeds the reference image.",
+        examples=[1234],
+    )
+    steps: int = _setting_field(
+        "default_steps",
+        ge=1,
+        le=100,
+        description="Denoising steps for shape reconstruction. The text_to_3d reference image uses a fixed step count.",
+        examples=[50],
+    )
+    guidance: float = _setting_field(
+        "default_guidance",
+        ge=1.0,
+        le=20.0,
+        description="Guidance scale for shape reconstruction. It does not change the fixed text_to_3d reference-image settings.",
+    )
+    octree_resolution: int = _setting_field(
+        "default_octree",
         ge=16,
         le=512,
         description="Voxel resolution",
@@ -272,8 +326,8 @@ class GenerationRequest(BaseModel):
         False,
         description="Generate texture? (Honoured for text_to_3d / image_to_3d; forced on for texture_mesh.)",
     )
-    face_count: int = Field(
-        40000,
+    face_count: int = _setting_field(
+        "default_face_count",
         ge=100,
         le=1_000_000,
         description="Target face count for reduction",
@@ -331,7 +385,7 @@ class GenerationRequest(BaseModel):
         inferred mode. The manager dispatches based on the resulting
         ``type`` discriminator.
         """
-        from typing import Any, cast
+        from typing import cast
 
         common = cast(
             "dict[str, Any]",
@@ -444,7 +498,7 @@ class CapabilityLimits(BaseModel):
     image_bytes: int
     mesh_bytes: int
     queue_depth: int
-    body_bytes: int
+    body_bytes: int | None
 
 
 class CapabilitiesResponse(BaseModel):

@@ -15,11 +15,11 @@ class TestRenderMetrics:
         assert "# HELP" in text
         assert "# TYPE" in text
 
-    def test_includes_archeon_metric_names(self):
+    def test_includes_polyforge_metric_names(self):
         from hy3dgen.api.metrics import JOBS_SUBMITTED, render_metrics
         JOBS_SUBMITTED.labels(mode="text_to_3d").inc()
         text = render_metrics().decode("utf-8")
-        assert "archeon_jobs_submitted_total" in text
+        assert "polyforge_jobs_submitted_total" in text
         assert 'mode="text_to_3d"' in text
 
 
@@ -42,8 +42,8 @@ class TestMetricsCounters:
 
 class TestOTelSpans:
     def test_start_span_returns_noop_when_disabled(self, monkeypatch):
-        """No ARCHEON_OTEL_ENABLED set -> no-op span."""
-        monkeypatch.delenv("ARCHEON_OTEL_ENABLED", raising=False)
+        """No POLYFORGE_OTEL_ENABLED set -> no-op span."""
+        monkeypatch.delenv("POLYFORGE_OTEL_ENABLED", raising=False)
         from hy3dgen.api.metrics import _NoopSpan, start_span
         s = start_span("test")
         assert isinstance(s, _NoopSpan)

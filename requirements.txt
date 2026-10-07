@@ -2,7 +2,7 @@ gradio_litmodel3d
 ninja
 pybind11
 
-diffusers
+diffusers>=0.39,<0.40
 einops
 opencv-python
 numpy

@@ -34,7 +34,7 @@ class TestAdminStats:
     async def test_stats_with_empty_persistence(self, monkeypatch, tmp_path):
         """Endpoint reports zero counts when the store is empty."""
         db = tmp_path / "jobs.db"
-        monkeypatch.setenv("ARCHEON_JOB_DB", str(db))
+        monkeypatch.setenv("POLYFORGE_JOB_DB", str(db))
         # Reload settings to pick up the new env var
         import importlib
         from hy3dgen.api import config as cfg_mod
@@ -57,7 +57,7 @@ class TestAdminStats:
         # Pre-populate the in-memory state by writing through a JobStore
         # that the lifespan will pick up on rehydrate.
         db = tmp_path / "jobs.db"
-        monkeypatch.setenv("ARCHEON_JOB_DB", str(db))
+        monkeypatch.setenv("POLYFORGE_JOB_DB", str(db))
         import importlib
         from hy3dgen.api import config as cfg_mod
         importlib.reload(cfg_mod)

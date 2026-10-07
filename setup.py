@@ -6,7 +6,7 @@ from setuptools import Extension, find_namespace_packages, setup
 
 
 def native_extensions():
-    if os.environ.get("ARCHEON_BUILD_NATIVE") != "1":
+    if os.environ.get("POLYFORGE_BUILD_NATIVE") != "1":
         return [], {}
     import pybind11
     from torch.utils.cpp_extension import BuildExtension, CUDAExtension

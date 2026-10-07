@@ -34,7 +34,7 @@ from hy3dgen.api.schemas import JobResponse, JobStatus
 _DEFAULT_DB_PATH = os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
     "hy3dgen",
-    "archeon",
+    "polyforge",
     "jobs.db",
 )
 
@@ -188,7 +188,9 @@ class JobStore:
             clauses.append("status = ?")
             params.append(status.value if hasattr(status, "value") else str(status))
         if q:
-            clauses.append("(LOWER(IFNULL(request_blob, '')) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(IFNULL(request_type, '')) LIKE ?)")
+            clauses.append(
+                "(LOWER(IFNULL(request_blob, '')) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(IFNULL(request_type, '')) LIKE ?)"
+            )
             like = f"%{q.lower()}%"
             params.extend([like, like, like])
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -234,9 +236,7 @@ class JobStore:
             await conn.commit()
             return cur.rowcount or 0
 
-    async def list_older_than(
-        self, max_age_seconds: int
-    ) -> list:  # type: ignore[valid-type]
+    async def list_older_than(self, max_age_seconds: int) -> list:  # type: ignore[valid-type]
         """Return terminal job records older than ``max_age_seconds``.
 
         Used by the file-cleanup pass so we can locate the artifacts
@@ -276,7 +276,9 @@ class JobStore:
             clauses.append("status = ?")
             params.append(status.value if hasattr(status, "value") else str(status))
         if q:
-            clauses.append("(LOWER(IFNULL(request_blob, '')) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(IFNULL(request_type, '')) LIKE ?)")
+            clauses.append(
+                "(LOWER(IFNULL(request_blob, '')) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(IFNULL(request_type, '')) LIKE ?)"
+            )
             like = f"%{q.lower()}%"
             params.extend([like, like, like])
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""

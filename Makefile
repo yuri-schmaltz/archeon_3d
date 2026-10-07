@@ -1,5 +1,5 @@
 # =============================================================================
-# Archeon 3D — top-level Makefile
+# PolyForge — top-level Makefile (Do prompt ao polígono)
 # =============================================================================
 # Common tasks for local development, testing, and packaging. Run
 # ``make help`` for a quick reference.
@@ -20,10 +20,10 @@ VENV         ?= .venv
 PYTHON       ?= $(VENV)/bin/python
 PIP          ?= $(VENV)/bin/pip
 UVICORN      ?= $(VENV)/bin/uvicorn
-FRONTEND_DIR := archeon_frontend
+FRONTEND_DIR := polyforge_frontend
 FRONTEND_PKG := $(FRONTEND_DIR)/package.json
 
-# Load .env if present, so the targets pick up ARCHEON_* env vars.
+# Load .env if present, so the targets pick up POLYFORGE_* env vars.
 ifneq (,$(wildcard ./.env))
 include .env
 export $(shell sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' .env 2>/dev/null)
@@ -56,7 +56,7 @@ install: venv ## Install the package (incl. dev + ml extras) into the venv.
 
 .PHONY: install-native
 install-native: install ## Compile texture extensions (requires CUDA toolkit + C++ compiler).
-	ARCHEON_BUILD_NATIVE=1 $(PIP) install --no-build-isolation -e .
+	POLYFORGE_BUILD_NATIVE=1 $(PIP) install --no-build-isolation -e .
 
 .PHONY: install-api
 install-api: venv ## Install only the API deps (no model weights). Lightweight.
@@ -65,18 +65,23 @@ install-api: venv ## Install only the API deps (no model weights). Lightweight.
 
 .PHONY: install-frontend
 install-frontend: ## Install npm deps for the frontend.
-	@echo ">>> installing archeon_frontend deps"
+	@echo ">>> installing polyforge_frontend deps"
 	cd $(FRONTEND_DIR) && npm install --no-audit --no-fund
+
+.PHONY: models
+models: ## Download model weights into the HF cache (SCOPE=shape|multiview|tex|t2i|all, default all).
+	@if [ ! -x "$(PYTHON)" ]; then $(MAKE) install-api; fi
+	$(PYTHON) scripts/download_models.py --scope $(or $(SCOPE),all)
 
 # ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------
 
 .PHONY: api
-api: ## Start the Archeon API on $$ARCHEON_HOST:$$ARCHEON_PORT.
+api: ## Start the PolyForge API on $$POLYFORGE_HOST:$$POLYFORGE_PORT.
 	@if [ ! -x "$(UVICORN)" ]; then echo ">>> venv missing — run 'make install' first"; exit 1; fi
-	@echo ">>> starting API on http://$${ARCHEON_HOST:-127.0.0.1}:$${ARCHEON_PORT:-8081}"
-	$(UVICORN) hy3dgen.api.server:app --host $${ARCHEON_HOST:-127.0.0.1} --port $${ARCHEON_PORT:-8081} --reload
+	@echo ">>> starting PolyForge API on http://$${POLYFORGE_HOST:-127.0.0.1}:$${POLYFORGE_PORT:-8081}"
+	$(UVICORN) hy3dgen.api.server:app --host $${POLYFORGE_HOST:-127.0.0.1} --port $${POLYFORGE_PORT:-8081} --reload
 
 .PHONY: frontend
 frontend: ## Start the Vite dev server.
@@ -100,9 +105,7 @@ dev: ## Start API + frontend together (concurrently).
 .PHONY: test
 test: ## Run the full pytest suite.
 	@if [ ! -x "$(PYTHON)" ]; then $(MAKE) install-api; fi
-	PYTHONPATH=. $(PYTHON) -m pytest tests/ -ra \
-		--ignore=tests/test_texgen_loading.py \
-		--ignore=tests/test_imports.py
+	PYTHONPATH=. $(PYTHON) -m pytest tests/ -ra
 
 .PHONY: lint
 lint: ruff mypy tsc eslint ## Run all linters (ruff + mypy + tsc + eslint).
@@ -141,7 +144,7 @@ eslint: ## Lint the frontend.
 build: build-frontend ## Build everything (frontend bundle).
 
 .PHONY: build-frontend
-build-frontend: ## Build the frontend into archeon_frontend/dist/.
+build-frontend: ## Build the frontend into polyforge_frontend/dist/.
 	@if [ ! -d "$(FRONTEND_DIR)/node_modules" ]; then $(MAKE) install-frontend; fi
 	cd $(FRONTEND_DIR) && npm run build
 
@@ -172,7 +175,7 @@ purge: clean ## Also remove the venv and all downloaded models.
 
 .PHONY: status
 status: ## Hit the API health endpoint (requires API to be running).
-	@curl -sS http://$${ARCHEON_HOST:-127.0.0.1}:$${ARCHEON_PORT:-8081}/health | python3 -m json.tool || true
+	@curl -sS http://$${POLYFORGE_HOST:-127.0.0.1}:$${POLYFORGE_PORT:-8081}/health | python3 -m json.tool || true
 
 .PHONY: openapi
 openapi: ## Regenerate docs/API_DOCUMENTATION.md + openapi.json from the schema (no server needed).

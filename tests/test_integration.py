@@ -1,4 +1,4 @@
-"""End-to-end integration test for the Archeon API.
+"""End-to-end integration test for the PolyForge API.
 
 Exercises the real FastAPI app with the GPU-bound ``ModelWorker`` replaced
 by a stub that:
@@ -94,7 +94,7 @@ def _patched_app(stub_manager):
     from hy3dgen.api import routes as routes_module
 
     # Clean any leftover env from previous tests.
-    for k in ("ARCHEON_API_KEY", "ARCHEON_CORS_ORIGINS", "ARCHEON_ALLOW_CREDENTIALS"):
+    for k in ("POLYFORGE_API_KEY", "POLYFORGE_CORS_ORIGINS", "POLYFORGE_ALLOW_CREDENTIALS"):
         os.environ.pop(k, None)
 
     server.app.dependency_overrides[PriorityRequestManager] = lambda: stub_manager
@@ -229,7 +229,7 @@ class TestHealthCheck:
     def test_health_reflects_auth_when_key_set(self):
         stub = _ImmediateManager()
         with _patched_app(stub) as client:
-            with patch.dict(os.environ, {"ARCHEON_API_KEY": "test"}):
+            with patch.dict(os.environ, {"POLYFORGE_API_KEY": "test"}):
                 # Reload the auth module so the env-derived key is re-read.
                 import importlib
                 from hy3dgen.api import auth

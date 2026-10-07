@@ -7,8 +7,8 @@ used by cloud object stores:
 
   1. The server mints a token with ``build_signed_url(...)`` that
      encodes ``path + expires_at + nonce`` and HMACs them with
-     ``ARCHEON_API_KEY`` (or a dedicated ``ARCHEON_URL_SIGNING_KEY``
-     when present).
+     ``POLYFORGE_API_KEY`` (or a dedicated
+     ``POLYFORGE_URL_SIGNING_KEY`` when present).
   2. The token is appended as ``token=<mac>&exp=<ts>`` query params
      on ``/files/...``. Static file servers can't read the body, so
      the signature must cover the path itself.
@@ -31,6 +31,8 @@ import secrets
 import time
 from urllib.parse import parse_qs, quote, urlencode
 
+from hy3dgen.api import config as config_module
+
 DEFAULT_TTL_SECONDS = 3600
 MAX_TTL_SECONDS = 86_400  # 24h cap so accidental config can't mint year-long tokens
 QUERY_TOKEN = "token"
@@ -43,16 +45,22 @@ def _signing_key() -> bytes:
     """Resolve the key used for HMAC.
 
     Preference order:
-      1. ``ARCHEON_URL_SIGNING_KEY`` (dedicated; recommended in prod).
-      2. ``ARCHEON_API_KEY`` (re-use the API key so setups with one
-         shared secret keep working out of the box).
+      1. ``POLYFORGE_URL_SIGNING_KEY`` in the process environment.
+      2. ``settings.url_signing_key`` (same variable, loaded through
+         Pydantic Settings and therefore monkeypatchable in tests).
+      3. ``POLYFORGE_API_KEY`` — re-use the API key so setups with one
+         shared secret keep working out of the box.
     Returns empty bytes when neither is set — the signer will then
     refuse to mint tokens, and the verifier will reject anything.
     """
-    explicit = os.environ.get("ARCHEON_URL_SIGNING_KEY", "").strip()
+    explicit = os.environ.get("POLYFORGE_URL_SIGNING_KEY", "").strip()
+    if not explicit and config_module.settings.url_signing_key:
+        explicit = config_module.settings.url_signing_key.strip()
     if explicit:
         return explicit.encode("utf-8")
-    fallback = os.environ.get("ARCHEON_API_KEY", "").strip()
+    fallback = os.environ.get("POLYFORGE_API_KEY", "").strip()
+    if not fallback and config_module.settings.api_key:
+        fallback = config_module.settings.api_key.strip()
     if fallback:
         return fallback.encode("utf-8")
     return b""
@@ -76,7 +84,9 @@ def _payload(path: str, expires_at: int, nonce: str) -> bytes:
     return f"{SIGNATURE_VERSION}|{path}|{expires_at}|{nonce}".encode()
 
 
-def build_signed_url(path: str, ttl_seconds: int = DEFAULT_TTL_SECONDS, *, base_url: str = "") -> str | None:
+def build_signed_url(
+    path: str, ttl_seconds: int = DEFAULT_TTL_SECONDS, *, base_url: str = ""
+) -> str | None:
     """Mint a signed URL for ``path``.
 
     Returns None when no signing key is configured — callers should
@@ -91,7 +101,11 @@ def build_signed_url(path: str, ttl_seconds: int = DEFAULT_TTL_SECONDS, *, base_
     nonce = secrets.token_urlsafe(8)
     mac = hmac.new(key, _payload(path, expires_at, nonce), hashlib.sha256).digest()
     query = urlencode(
-        {QUERY_TOKEN: f"{SIGNATURE_VERSION}.{_b64url_encode(mac)}", QUERY_EXPIRES: str(expires_at), QUERY_NONCE: nonce}
+        {
+            QUERY_TOKEN: f"{SIGNATURE_VERSION}.{_b64url_encode(mac)}",
+            QUERY_EXPIRES: str(expires_at),
+            QUERY_NONCE: nonce,
+        }
     )
     quoted = quote(path, safe="/")
     return f"{base_url}/files/{quoted}?{query}"

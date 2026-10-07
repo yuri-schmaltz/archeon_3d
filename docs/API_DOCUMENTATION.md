@@ -1,9 +1,9 @@
-# Archeon 3D Backend — API Reference
+# PolyForge Backend — API Reference
 
 Version `2.1.0.post7`. Generated from the OpenAPI schema by
 `scripts/gen_api_docs.py`; do not edit by hand.
 
-High-performance local 3D generation backend with priority queuing and polymorphic API.
+High-performance local 3D generation backend — do prompt ao polígono. Priority queuing + polymorphic API.
 
 ## Contents
 
@@ -15,7 +15,7 @@ High-performance local 3D generation backend with priority queuing and polymorph
 
 ## Authentication
 
-When `ARCHEON_API_KEY` is set, every `/v1/*` route requires an `X-API-Key`
+When `POLYFORGE_API_KEY` is set, every `/v1/*` route requires an `X-API-Key`
 header. A missing header returns `401` with `WWW-Authenticate: ApiKey`; a
 wrong key returns `403`. With no key configured, auth is disabled (dev only).
 
@@ -75,7 +75,7 @@ Responses: `200`, `422`
 
 Submit a unified generation job
 
-All input fields are optional at the type level; the backend infers the generation mode from what's filled in. See `GenerationRequest` for the dispatch rules. Common params (`seed`, `steps`, `guidance`, `octree_resolution`, `format`, `face_count`, `texture`, `remove_background`) are shared across all modes.
+All input fields are optional at the type level; the backend infers the generation mode from what's filled in. See `GenerationRequest` for the dispatch rules. `seed`, `steps`, `guidance`, `octree_resolution`, `format`, `face_count`, `texture`, and `remove_background` control the 3D/mesh reconstruction; only `seed` is also passed to the fixed `text_to_3d` reference-image stage.
 
 Responses: `202`, `422`
 
@@ -83,13 +83,13 @@ Responses: `202`, `422`
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `text` | str | — | Text prompt or guidance. Required for text_to_3d. |
+| `text` | str | — | Text prompt or guidance. Required for text_to_3d. The reference-image stage uses its first 60 characters plus a fixed style suffix. |
 | `image` | str | — | Base64-encoded image (single view, used by image_to_3d). |
 | `views` | str | — | Four base64-encoded views (front/back/left/right). |
 | `mesh` | str | — | Base64-encoded GLB to re-texture (texture_mesh). |
-| `seed` | int | `1234` | Random seed |
-| `steps` | 1-100 | `50` | Denoising steps |
-| `guidance` | 1-20 | `5.0` | Guidance scale |
+| `seed` | int | `1234` | Random seed for the generated 3D output. For text_to_3d it also seeds the reference image. |
+| `steps` | 1-100 | `50` | Denoising steps for shape reconstruction. The text_to_3d reference image uses a fixed step count. |
+| `guidance` | 1-20 | `5.0` | Guidance scale for shape reconstruction. It does not change the fixed text_to_3d reference-image settings. |
 | `octree_resolution` | 16-512 | `256` | Voxel resolution |
 | `format` | `glb` \| `obj` \| `ply` \| `stl` | `'glb'` | Output mesh format |
 | `texture` | bool | `False` | Generate texture? (Honoured for text_to_3d / image_to_3d; forced on for texture_mesh.) |
@@ -149,7 +149,7 @@ Responses: `200`, `422`
 
 Mint a short-lived signed URL for the job's mesh output
 
-Mint an HMAC-signed `/files/<name>.glb` URL. The token is bound to the file's basename, scoped to a TTL (default 1 h, capped at 24 h), and verifiable by `_AuthStaticFiles` without leaking `ARCHEON_API_KEY`. Falls back to 503 when no signing key is configured so callers know to use the legacy header-based path instead.
+Mint an HMAC-signed `/files/<name>.glb` URL. The token is bound to the file's basename, scoped to a TTL (default 1 h, capped at 24 h), and verifiable by `_AuthStaticFiles` without leaking `POLYFORGE_API_KEY`. Falls back to 503 when no signing key is configured so callers know to use the legacy header-based path instead.
 
 Responses: `200`, `404`, `422`, `503`
 
@@ -217,7 +217,7 @@ Responses: `200`, `202`, `409`, `422`
 
 Current state of the inference model
 
-Return whether the shape model is loaded and where the load is. `loaded` flips to `true` once `ModelWorker.generate` has materialised the shape pipeline (which is what `POST /v1/models/load` triggers eagerly).
+Return whether the shape and text-to-image models are loaded. `loaded` tracks the shape pipeline only. `text_to_image_loaded` tracks the separate HunyuanDiT reference-image pipeline, which remains lazy until the first `text_to_3d` job.
 
 Responses: `200`, `422`
 

@@ -1,6 +1,6 @@
 name: Release
 
-# Triggers on a version tag like v2.1.0-archeon9. Builds an sdist + wheel
+# Triggers on a version tag like v2.1.0-polyforge9. Builds an sdist + wheel
 # and publishes to PyPI. OIDC trusted publishing is used (no API token
 # required); set up at https://pypi.org/manage/account/publishing/
 

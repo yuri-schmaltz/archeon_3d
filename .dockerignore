@@ -54,8 +54,8 @@ htmlcov/
 *.swo
 
 # Frontend (built inside the image from package.json)
-archeon_frontend/node_modules
-archeon_frontend/dist
+polyforge_frontend/node_modules
+polyforge_frontend/dist
 
 # Worktrees
 .worktrees/
@@ -63,7 +63,7 @@ archeon_frontend/dist
 # Docs
 docs/
 *.md
-!ARCHEON_README.md
+!POLYFORGE_README.md
 !README.md
 
 # Editor temp

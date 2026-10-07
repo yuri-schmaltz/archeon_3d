@@ -256,8 +256,8 @@ async def test_cleanup_files_older_than_removes_only_files(tmp_path):
 
 
 def test_files_protected_when_api_key_configured(monkeypatch, tmp_path):
-    """When ARCHEON_API_KEY is set, /files requires the matching header."""
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    """When POLYFORGE_API_KEY is set, /files requires the matching header."""
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     import importlib
     import pathlib
 
@@ -281,12 +281,12 @@ def test_files_protected_when_api_key_configured(monkeypatch, tmp_path):
         assert r.content == b"GLB-fake"
     finally:
         artifact.unlink(missing_ok=True)
-        monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
 
 
 def test_files_open_when_api_key_unset(tmp_path):
-    """When ARCHEON_API_KEY is empty, /files is publicly readable (dev mode)."""
-    os.environ.pop("ARCHEON_API_KEY", None)
+    """When POLYFORGE_API_KEY is empty, /files is publicly readable (dev mode)."""
+    os.environ.pop("POLYFORGE_API_KEY", None)
     import importlib
     import pathlib
 
@@ -315,7 +315,7 @@ def test_files_open_when_api_key_unset(tmp_path):
 
 def test_body_size_limit_returns_413(tmp_path, monkeypatch):
     """Requests larger than the configured cap are rejected with 413."""
-    os.environ.pop("ARCHEON_API_KEY", None)
+    os.environ.pop("POLYFORGE_API_KEY", None)
     import importlib
 
     from hy3dgen.api import auth as auth_module, server as server_module

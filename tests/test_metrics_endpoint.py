@@ -46,7 +46,7 @@ class TestMetricsEndpoint:
         # (pointed at a temp path by patching get_job_db_path).
         import tempfile, os
         tmp_db = os.path.join(tempfile.mkdtemp(), "jobs.db")
-        monkeypatch.setenv("ARCHEON_JOB_DB", tmp_db)
+        monkeypatch.setenv("POLYFORGE_JOB_DB", tmp_db)
         from hy3dgen.api.config import settings
         # Reload settings to pick up the new env var
         import importlib
@@ -59,4 +59,4 @@ class TestMetricsEndpoint:
             assert r.status_code == 200
             assert "text/plain" in r.headers["content-type"]
             body = r.text
-            assert "archeon_jobs_submitted_total" in body or "archeon_jobs_in_memory" in body
+            assert "polyforge_jobs_submitted_total" in body or "polyforge_jobs_in_memory" in body

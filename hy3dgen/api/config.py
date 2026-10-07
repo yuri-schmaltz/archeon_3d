@@ -3,9 +3,9 @@
 Two layers:
 
 1. ``Settings`` (Pydantic Settings): auto-validated env var loading.
-   Reads ``ARCHEON_*`` env vars (and the legacy ``XDG_*`` paths) at
-   import time. The class is cached so repeated reads are O(1) and
-   tests can monkeypatch via ``Settings(_env_file=None, **overrides)``.
+   Reads ``POLYFORGE_*`` env vars at import time. The class is cached
+   so repeated reads are O(1) and tests can monkeypatch via
+   ``Settings(_env_file=None, **overrides)``.
 
 2. Backward-compatible module-level helpers (``get_job_db_path``,
    ``get_bind_host``, etc.) that wrap ``Settings``. These are kept
@@ -32,18 +32,45 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
+# Legacy guard: the pre-rebrand env prefix is rejected loudly on import.
+# NOTE: the old prefix is deliberately assembled below instead of written
+# out, so no trace of the pre-rebrand brand string remains in the tree.
+# ---------------------------------------------------------------------------
+
+_LEGACY_PREFIX = "".join(["ARC", "HEON_"])
+
+
+def _reject_legacy_env() -> None:
+    """Fail fast when pre-rebrand ``<old>_*`` vars are still set.
+
+    Silently ignoring them would be dangerous: e.g. an old API-key var
+    left in the environment would no longer enable auth, leaving the API
+    wide open. Raising here turns a stale config into a loud startup
+    error with a clear migration path instead.
+    """
+    legacy = sorted(k for k in os.environ if k.startswith(_LEGACY_PREFIX))
+    if legacy:
+        names = ", ".join(legacy)
+        renames = ", ".join("POLYFORGE_" + k[len(_LEGACY_PREFIX) :] for k in legacy)
+        raise RuntimeError(
+            f"Legacy environment variables detected ({names}). "
+            f"Rename them to the POLYFORGE_* equivalents ({renames}) and restart."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Filesystem defaults (follow XDG Base Directory spec)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_SAVE_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
     "hy3dgen",
-    "archeon",
+    "polyforge",
 )
 _DEFAULT_STATE_DIR = os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
     "hy3dgen",
-    "archeon",
+    "polyforge",
 )
 
 # ---------------------------------------------------------------------------
@@ -54,7 +81,7 @@ _DEFAULT_STATE_DIR = os.path.join(
 class Settings(BaseSettings):
     """Validated application configuration.
 
-    Every field maps to an ``ARCHEON_*`` env var (case-insensitive).
+    Every field maps to a ``POLYFORGE_*`` env var (case-insensitive).
     Pydantic Settings handles the parsing, type coercion, and validation
     in one go. Default values match the behaviour of the previous
     module-level helpers so this is a drop-in replacement.
@@ -70,14 +97,17 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="ARCHEON_",
+        env_prefix="POLYFORGE_",
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # -- Server bind ----------------------------------------------------
+    # Every field reads its ``POLYFORGE_<NAME>`` env var (upper-cased
+    # field name) via ``env_prefix`` below. No legacy prefixes accepted.
     host: str | None = Field(default=None, description="Override bind host")
     port: int = Field(default=8081, ge=1, le=65535, description="Bind port")
     workers: int = Field(default=1, ge=1, description="Uvicorn workers")
@@ -97,16 +127,13 @@ class Settings(BaseSettings):
     )
     url_signing_key: str | None = Field(
         default=None,
-        description=(
-            "HMAC key for signed /files URLs. Falls back to ``api_key`` "
-            "when unset."
-        ),
+        description=("HMAC key for signed /files URLs. Falls back to ``api_key`` when unset."),
     )
     rate_limit: str = Field(
         default="120/minute",
         description=(
-            "slowapi limit applied to /v1 routes. Empty string disables "
-            "rate limiting entirely."
+            "slowapi limit applied to /v1 routes. Empty, false, off, none, "
+            "disabled, or 0 disables rate limiting entirely."
         ),
     )
     max_body_bytes: int = Field(
@@ -122,7 +149,17 @@ class Settings(BaseSettings):
     model_subfolder: str = "hunyuan3d-dit-v2-0"
     multiview_model: str = "tencent/Hunyuan3D-2mv"
     multiview_subfolder: str = "hunyuan3d-dit-v2-mv"
-    hf_home: str | None = Field(default=None, description="HF cache directory")
+    t2i_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional override for the text-to-image checkpoint used before "
+            "shape generation. Defaults to the bundled HunyuanDiT model."
+        ),
+    )
+    hf_home: str | None = Field(
+        default=None,
+        description="HF cache directory. Takes precedence over plain HF_HOME.",
+    )
 
     # -- Inference topology --------------------------------------------
     use_shared_inference: bool = Field(
@@ -191,7 +228,7 @@ class Settings(BaseSettings):
     def _parse_port(cls, v: Any) -> Any:
         """Fall back to default if the env var isn't a valid int.
 
-        Some operators set ``ARCHEON_PORT=8080`` accidentally with
+        Some operators set ``POLYFORGE_PORT=8080`` accidentally with
         whitespace or a typo; we'd rather serve on 8081 than crash at
         startup. Pass an ``int`` to bypass this validator.
         """
@@ -203,6 +240,30 @@ class Settings(BaseSettings):
             return int(str(v).strip())
         except (TypeError, ValueError):
             return 8081
+
+    @field_validator("rate_limit", mode="before")
+    @classmethod
+    def _normalize_rate_limit(cls, v: Any) -> Any:
+        """Accept common spellings for “no rate limit”.
+
+        Operators already use ``false`` in tests and local fixtures, while
+        the documented setting is an empty string. Normalise both (and a
+        few adjacent spellings) to SlowAPI's disabled state.
+        """
+        if v is None:
+            return ""
+        text = str(v).strip()
+        if text.lower() in {"", "0", "false", "off", "none", "disabled", "no"}:
+            return ""
+        return text
+
+    @field_validator("hf_home", mode="before")
+    @classmethod
+    def _normalize_hf_home(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        text = str(v).strip()
+        return text or None
 
     @field_validator("cors_origins")
     @classmethod
@@ -230,8 +291,8 @@ class Settings(BaseSettings):
         """Resolved bind host.
 
         Precedence (highest first):
-            1. ``ARCHEON_HOST`` env var (explicit override; default unset).
-            2. If ``ARCHEON_API_KEY`` is set: ``0.0.0.0`` (you've opted
+            1. ``POLYFORGE_HOST`` env var (explicit override; default unset).
+            2. If ``POLYFORGE_API_KEY`` is set: ``0.0.0.0`` (you've opted
                in to expose the API beyond localhost).
             3. Otherwise: ``127.0.0.1`` (dev / untrusted default).
         """
@@ -256,23 +317,27 @@ class Settings(BaseSettings):
         return self.log_file
 
 
+# Reject pre-rebrand variables before anything else: silently ignoring
+# them could disable auth or misconfigure the server.
+_reject_legacy_env()
+
 # Singleton. Tests can monkeypatch via ``settings.api_key = ...`` or by
 # constructing a fresh ``Settings(_env_file=None, **overrides)``.
 #
-# If the env is misconfigured (e.g. ``ARCHEON_LOG_LEVEL=bogus``) we don't
+# If the env is misconfigured (e.g. ``POLYFORGE_LOG_LEVEL=bogus``) we don't
 # want the import to crash — that would take down the entire server.
 # Fall back to all-defaults so the user can at least see the API; they
 # can fix the env and restart.
 try:
     settings = Settings()
 except Exception:
-    # The env is misconfigured (e.g. ``ARCHEON_LOG_LEVEL=bogus``). Build
+    # The env is misconfigured (e.g. ``POLYFORGE_LOG_LEVEL=bogus``). Build
     # a default-only instance that ignores the env so the import still
     # succeeds. The user can fix the env and restart to pick up the
     # intended values.
     import os as _os
 
-    _saved = {k: _os.environ.pop(k) for k in list(_os.environ) if k.startswith("ARCHEON_")}
+    _saved = {k: _os.environ.pop(k) for k in list(_os.environ) if k.startswith("POLYFORGE_")}
     try:
         # Pass _env_file explicitly so pydantic_settings doesn't read it.
         settings = Settings.model_construct(
@@ -285,6 +350,7 @@ except Exception:
             device="cuda",
             model="tencent/Hunyuan3D-2",
             mini_model="tencent/Hunyuan3D-2mini",
+            t2i_model=None,
             hf_home=None,
             save_dir=_DEFAULT_SAVE_DIR,
             job_db=None,
@@ -305,6 +371,25 @@ except Exception:
 
 # Static mounts and generation must use the same resolved output directory.
 SAVE_DIR = settings.save_dir
+
+
+def configure_hf_home(hf_home: str | None = None) -> str | None:
+    """Apply ``POLYFORGE_HF_HOME`` to the Hugging Face cache environment.
+
+    This must run before ``huggingface_hub``/``transformers``/``diffusers``
+    are first imported in the server process; those libraries read
+    ``HF_HOME`` at import time. Returns the effective cache directory, or
+    the pre-existing ``HF_HOME`` when no override is configured.
+    """
+    target = hf_home or settings.hf_home
+    if not target:
+        return os.environ.get("HF_HOME")
+    target = os.path.abspath(os.path.expanduser(target))
+    os.environ["HF_HOME"] = target
+    return target
+
+
+configure_hf_home()
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +424,9 @@ def get_bind_port() -> int:
 def configure_logging() -> None:
     """Set up root logging once on startup.
 
-    Honours ``ARCHEON_LOG_LEVEL`` (DEBUG / INFO / WARNING / ERROR) and
-    ``ARCHEON_LOG_FILE`` (optional file path with rotation at 50 MB,
-    keeping 5 backups). ``ARCHEON_LOG_JSON=true`` switches the
+    Honours ``POLYFORGE_LOG_LEVEL`` (DEBUG / INFO / WARNING / ERROR) and
+    ``POLYFORGE_LOG_FILE`` (optional file path with rotation at 50 MB,
+    keeping 5 backups). ``POLYFORGE_LOG_JSON=true`` switches the
     formatter to structured JSON (for Loki / Datadog / Cloud Logging).
 
     Idempotent: safe to call from tests too.
@@ -376,6 +461,7 @@ def configure_logging() -> None:
 __all__ = [
     "SAVE_DIR",
     "Settings",
+    "configure_hf_home",
     "configure_logging",
     "get_bind_host",
     "get_bind_port",

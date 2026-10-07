@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 VIEW_KEYS = ("front", "back", "left", "right")
+# Canonical text-to-image checkpoint. The API layer reports this ID in
+# capabilities/status responses, so keep it in one place.
+DEFAULT_T2I_MODEL = "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled"
 
 
 def decode_base64(value: str) -> bytes:
@@ -39,6 +42,7 @@ class ModelWorker:
         device="cuda",
         enable_tex=False,
         enable_t2i=False,
+        t2i_model_path: str | None = None,
         multiview_model_path="tencent/Hunyuan3D-2mv",
         multiview_subfolder="hunyuan3d-dit-v2-mv",
     ):
@@ -48,6 +52,7 @@ class ModelWorker:
         self.device = device
         self.enable_tex = enable_tex
         self.enable_t2i = enable_t2i
+        self.t2i_model_path = t2i_model_path or DEFAULT_T2I_MODEL
         self.multiview_model_path = multiview_model_path
         self.multiview_subfolder = multiview_subfolder
         self.pipeline: Any = None
@@ -95,17 +100,17 @@ class ModelWorker:
             self.rembg = BackgroundRemover()
         return self.rembg(image)
 
-    def _image_from_text(self, prompt: str):
+    def _image_from_text(self, prompt: str, seed: int = 0):
         if not self.enable_t2i:
             raise ValueError("Text-to-3D is not enabled for this worker.")
         if self.pipeline_t2i is None:
             from hy3dgen.text2image import HunyuanDiTPipeline
 
             self.pipeline_t2i = HunyuanDiTPipeline(
-                "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled",
+                self.t2i_model_path,
                 device=self.device,
             )
-        return self.pipeline_t2i(prompt)
+        return self.pipeline_t2i(prompt, seed=seed)
 
     def _texture(self, mesh, image, face_count: int):
         if not self.enable_tex:
@@ -153,7 +158,7 @@ class ModelWorker:
         elif params.get("image"):
             image = self._prepare_image(params["image"], remove_background)
         elif params.get("text"):
-            image = self._image_from_text(params["text"])
+            image = self._image_from_text(params["text"], params.get("seed", 1234))
             if remove_background:
                 image = self._remove_background(image)
         else:
@@ -206,3 +211,100 @@ class ModelWorker:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return save_path
+
+
+def worker_model_state(worker, defaults: dict | None = None) -> dict:
+    """Summarise which model families a worker has loaded.
+
+    ``None`` is a valid worker: it simply reports everything unloaded.
+    Custom test doubles only need the attributes they exercise; missing
+    attributes fall back to safe defaults. ``defaults`` supplies the
+    manager/service configuration so capabilities report the configured
+    model IDs even before the first worker exists.
+    """
+    configured = defaults or {}
+    shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
+    texture_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
+    t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
+    t2i_enabled = worker is not None and bool(getattr(worker, "enable_t2i", False))
+    multiview_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
+    return {
+        "shape_loaded": bool(shape_loaded),
+        "texture_loaded": bool(texture_loaded),
+        "t2i_loaded": bool(t2i_loaded),
+        "t2i_enabled": t2i_enabled,
+        "multiview_loaded": bool(multiview_loaded),
+        # ``text`` is usable while T2I is enabled even before its weights
+        # have been downloaded; it is not usable from shape weights alone
+        # when the T2I stage is disabled.
+        "text_available": bool(t2i_loaded or (shape_loaded and t2i_enabled)),
+        "shape_model": getattr(worker, "model_path", None)
+        or configured.get("shape_model", "tencent/Hunyuan3D-2mini"),
+        "shape_subfolder": getattr(worker, "subfolder", None) or configured.get("shape_subfolder"),
+        "multiview_model": getattr(worker, "multiview_model_path", None)
+        or configured.get("multiview_model", "tencent/Hunyuan3D-2mv"),
+        "multiview_subfolder": getattr(worker, "multiview_subfolder", None)
+        or configured.get("multiview_subfolder"),
+        "texture_model": getattr(worker, "tex_model_path", None)
+        or configured.get("texture_model", "tencent/Hunyuan3D-2"),
+        "t2i_model": getattr(worker, "t2i_model_path", None)
+        or configured.get("t2i_model")
+        or DEFAULT_T2I_MODEL,
+    }
+
+
+def model_capability_snapshot(state: dict) -> dict:
+    """Build the modes/models section of ``/v1/capabilities``."""
+    text_available = state["text_available"]
+    shape_loaded = state["shape_loaded"]
+    texture_loaded = state["texture_loaded"]
+    t2i_loaded = state["t2i_loaded"]
+    multiview_loaded = state["multiview_loaded"]
+    return {
+        "modes": {
+            "text": {
+                "available": text_available,
+                "reason": None if text_available else "Shape/text-to-image model not loaded.",
+                "requires": ["text_to_image"] if not t2i_loaded else [],
+            },
+            "image": {
+                "available": shape_loaded,
+                "reason": None if shape_loaded else "Shape model not loaded.",
+                "requires": [],
+            },
+            "multiview": {
+                "available": bool(multiview_loaded or shape_loaded),
+                "reason": None
+                if (multiview_loaded or shape_loaded)
+                else "Multiview model not loaded.",
+                "requires": [],
+            },
+            "texture": {
+                "available": bool(texture_loaded or shape_loaded),
+                "reason": None if (texture_loaded or shape_loaded) else "Texture model not loaded.",
+                "requires": [],
+            },
+        },
+        "models": {
+            "shape": {
+                "id": state["shape_model"],
+                "subfolder": state["shape_subfolder"],
+                "loaded": shape_loaded,
+            },
+            "multiview": {
+                "id": state["multiview_model"],
+                "subfolder": state["multiview_subfolder"],
+                "loaded": multiview_loaded,
+            },
+            "texture": {
+                "id": state["texture_model"],
+                "subfolder": None,
+                "loaded": texture_loaded,
+            },
+            "text_to_image": {
+                "id": state["t2i_model"],
+                "subfolder": None,
+                "loaded": t2i_loaded,
+            },
+        },
+    }

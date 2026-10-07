@@ -28,7 +28,7 @@ RUN pip3 install --upgrade pip \
 # Copy the package and opt into C++/CUDA extension compilation.
 COPY . .
 ARG TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
-RUN ARCHEON_BUILD_NATIVE=1 pip3 install --no-build-isolation .
+RUN POLYFORGE_BUILD_NATIVE=1 pip3 install --no-build-isolation .
 
 # ----------------------------------------------------------------------
 # Runtime image: same base, but without the build-only tools.
@@ -68,8 +68,8 @@ EXPOSE 8081 8080
 
 # Default to the backend. Override with APP_MODE=launcher for the legacy UI.
 ENV APP_MODE=api
-# Configure ARCHEON_API_KEY before exposing the API beyond a trusted network.
-ENV ARCHEON_API_KEY=""
+# Configure POLYFORGE_API_KEY before exposing the API beyond a trusted network.
+ENV POLYFORGE_API_KEY=""
 
 ENTRYPOINT ["/bin/bash", "-c"]
 CMD ["if [ \"$APP_MODE\" = 'launcher' ]; then \

@@ -1,9 +1,9 @@
 """Tests for the hardened configuration surface.
 
 Covers the settings that used to be documented but unread
-(``ARCHEON_WORKERS``), the ones that were read but bypassed Pydantic
-(``ARCHEON_ALLOW_CREDENTIALS``), and the ones that were never wired at
-all (``ARCHEON_RATE_LIMIT``, ``ARCHEON_MAX_BODY_BYTES``).
+(``POLYFORGE_WORKERS``), the ones that were read but bypassed Pydantic
+(``POLYFORGE_ALLOW_CREDENTIALS``), and the ones that were never wired at
+all (``POLYFORGE_RATE_LIMIT``, ``POLYFORGE_MAX_BODY_BYTES``).
 """
 
 import importlib
@@ -24,7 +24,7 @@ class TestWorkersIsWired:
     def test_workers_setting_reads_env(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_WORKERS", "3")
+        monkeypatch.setenv("POLYFORGE_WORKERS", "3")
         assert Settings(_env_file=None).workers == 3
 
     def test_workers_defaults_to_one(self):
@@ -39,7 +39,7 @@ class TestWorkersIsWired:
         from hy3dgen.api.config import Settings
         from hy3dgen.api.server import _reject_multi_worker
 
-        monkeypatch.setenv("ARCHEON_WORKERS", "1")
+        monkeypatch.setenv("POLYFORGE_WORKERS", "1")
         settings = Settings(_env_file=None)
         parser = argparse.ArgumentParser()
         parser.add_argument("--workers", type=int, default=settings.workers)
@@ -51,7 +51,7 @@ class TestAllowCredentials:
     def test_allow_credentials_reads_env(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_ALLOW_CREDENTIALS", "true")
+        monkeypatch.setenv("POLYFORGE_ALLOW_CREDENTIALS", "true")
         assert Settings(_env_file=None).allow_credentials is True
 
     def test_allow_credentials_defaults_false(self):
@@ -77,11 +77,11 @@ class TestAllowCredentials:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
             and any(
-                isinstance(a, ast.Constant) and a.value == "ARCHEON_ALLOW_CREDENTIALS"
+                isinstance(a, ast.Constant) and a.value == "POLYFORGE_ALLOW_CREDENTIALS"
                 for a in node.args
             )
         ]
-        assert not offenders, "CORS still reads ARCHEON_ALLOW_CREDENTIALS directly"
+        assert not offenders, "CORS still reads POLYFORGE_ALLOW_CREDENTIALS directly"
         assert "settings.allow_credentials" in source
 
 
@@ -94,23 +94,74 @@ class TestRateLimitSetting:
     def test_rate_limit_reads_env(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_RATE_LIMIT", "10/second")
+        monkeypatch.setenv("POLYFORGE_RATE_LIMIT", "10/second")
         assert Settings(_env_file=None).rate_limit == "10/second"
 
     def test_rate_limit_can_be_disabled(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_RATE_LIMIT", "")
+        monkeypatch.setenv("POLYFORGE_RATE_LIMIT", "")
+        assert Settings(_env_file=None).rate_limit == ""
+
+    @pytest.mark.parametrize("value", ["false", "False", "off", "none", "disabled", "0"])
+    def test_rate_limit_disable_spellings_normalise_to_empty(self, monkeypatch, value):
+        from hy3dgen.api.config import Settings
+
+        monkeypatch.setenv("POLYFORGE_RATE_LIMIT", value)
         assert Settings(_env_file=None).rate_limit == ""
 
     def test_limiter_honours_the_setting(self, monkeypatch):
-        """An empty ARCHEON_RATE_LIMIT must not blow up slowapi and must
+        """An empty POLYFORGE_RATE_LIMIT must not blow up slowapi and must
         produce a limiter with no default limits."""
         from slowapi import Limiter
         from slowapi.util import get_remote_address
 
         assert Limiter(key_func=get_remote_address, default_limits=[]) is not None
         assert Limiter(key_func=get_remote_address, default_limits=["5/minute"]) is not None
+
+
+class TestRateLimitMiddleware:
+    def test_api_routes_use_rate_limited_route_class(self):
+        from fastapi.routing import APIRoute
+
+        from hy3dgen.api.routes import RateLimitedRoute, router
+
+        api_routes = [route for route in router.routes if isinstance(route, APIRoute)]
+        assert api_routes
+        assert all(isinstance(route, RateLimitedRoute) for route in api_routes)
+
+    def test_operational_routes_are_exempt(self):
+        from hy3dgen.api import server as server_module
+
+        exempt = server_module.limiter._exempt_routes
+        for endpoint in (
+            server_module.health_check,
+            server_module.readiness_check,
+            server_module.metrics_endpoint,
+        ):
+            name = f"{endpoint.__module__}.{endpoint.__name__}"
+            assert name in exempt
+
+    def test_api_route_returns_429_after_limit(self):
+        """SlowAPI defaults must actually be evaluated by the app."""
+        from fastapi.testclient import TestClient
+        from slowapi import Limiter
+        from slowapi.util import get_remote_address
+
+        from hy3dgen.api import server as server_module
+
+        limiter = server_module.limiter
+        temporary = Limiter(key_func=get_remote_address, default_limits=["2/minute"])
+        original = limiter._default_limits
+        limiter._default_limits = temporary._default_limits
+        try:
+            with TestClient(server_module.app) as client:
+                assert client.get("/v1/admin/stats").status_code == 200
+                assert client.get("/v1/admin/stats").status_code == 200
+                response = client.get("/v1/admin/stats")
+                assert response.status_code == 429
+        finally:
+            limiter._default_limits = original
 
 
 class TestMaxBodyBytes:
@@ -122,13 +173,13 @@ class TestMaxBodyBytes:
     def test_reads_env(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_MAX_BODY_BYTES", "1024")
+        monkeypatch.setenv("POLYFORGE_MAX_BODY_BYTES", "1024")
         assert Settings(_env_file=None).max_body_bytes == 1024
 
     def test_zero_disables_the_guard(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_MAX_BODY_BYTES", "0")
+        monkeypatch.setenv("POLYFORGE_MAX_BODY_BYTES", "0")
         assert Settings(_env_file=None).max_body_bytes == 0
 
     def test_negative_is_rejected(self):
@@ -187,13 +238,76 @@ class TestUrlSigningKeySetting:
     def test_reads_env(self, monkeypatch):
         from hy3dgen.api.config import Settings
 
-        monkeypatch.setenv("ARCHEON_URL_SIGNING_KEY", "s3cret")
+        monkeypatch.setenv("POLYFORGE_URL_SIGNING_KEY", "s3cret")
         assert Settings(_env_file=None).url_signing_key == "s3cret"
+
+    def test_settings_key_is_used_when_env_is_absent(self, monkeypatch):
+        from hy3dgen.api import signed_urls
+        from hy3dgen.api.config import settings
+
+        monkeypatch.delenv("POLYFORGE_URL_SIGNING_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
+        monkeypatch.setattr(settings, "url_signing_key", "settings-key")
+        monkeypatch.setattr(settings, "api_key", None)
+
+        url = signed_urls.build_signed_url("abc.glb", ttl_seconds=60)
+        assert url is not None
+        query = url.split("?", 1)[1]
+        assert signed_urls.verify_signed_url("abc.glb", query) is True
+
+
+class TestSettingsAreCanonical:
+    def test_api_key_falls_back_to_settings(self, monkeypatch):
+        from hy3dgen.api import auth as auth_module
+        from hy3dgen.api.config import settings
+
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
+        monkeypatch.setattr(settings, "api_key", "settings-key")
+        assert auth_module.get_api_key() == "settings-key"
+
+    def test_generation_defaults_follow_settings(self, monkeypatch):
+        from hy3dgen.api.config import settings
+        from hy3dgen.api.schemas import TextTo3DRequest
+
+        monkeypatch.setattr(settings, "default_seed", 9999)
+        monkeypatch.setattr(settings, "default_steps", 7)
+        monkeypatch.setattr(settings, "default_guidance", 9.5)
+        monkeypatch.setattr(settings, "default_octree", 192)
+        monkeypatch.setattr(settings, "default_face_count", 12345)
+
+        request = TextTo3DRequest(type="text_to_3d", prompt="a prompt")
+        assert (
+            request.seed,
+            request.steps,
+            request.guidance,
+            request.octree_resolution,
+            request.face_count,
+        ) == (9999, 7, 9.5, 192, 12345)
+
+    def test_capabilities_body_bytes_follows_settings(self, monkeypatch):
+        from hy3dgen.api.config import settings
+        from hy3dgen.api.manager import PriorityRequestManager
+
+        monkeypatch.setattr(settings, "max_body_bytes", 1024)
+        manager = PriorityRequestManager(device="cpu")
+        assert manager.capabilities()["limits"]["body_bytes"] == 1024
+
+        monkeypatch.setattr(settings, "max_body_bytes", 0)
+        assert manager.capabilities()["limits"]["body_bytes"] is None
+
+    def test_configure_hf_home_sets_environment(self, monkeypatch, tmp_path):
+        import os
+
+        from hy3dgen.api.config import configure_hf_home
+
+        monkeypatch.delenv("HF_HOME", raising=False)
+        assert configure_hf_home(str(tmp_path)) == str(tmp_path)
+        assert os.environ["HF_HOME"] == str(tmp_path)
 
 
 class TestEnvExampleCoverage:
-    """Every ARCHEON_* field in Settings must appear in .env.example, and
-    every ARCHEON_* line in .env.example must map to a real field."""
+    """Every POLYFORGE_* field in Settings must appear in .env.example, and
+    every POLYFORGE_* line in .env.example must map to a real field."""
 
     def _env_example_text(self):
         from pathlib import Path
@@ -206,7 +320,7 @@ class TestEnvExampleCoverage:
         text = self._env_example_text()
         missing = []
         for name in Settings.model_fields:
-            var = f"ARCHEON_{name.upper()}"
+            var = f"POLYFORGE_{name.upper()}"
             if var not in text:
                 missing.append(var)
         assert not missing, f"undocumented in .env.example: {missing}"
@@ -219,8 +333,7 @@ class TestEnvExampleCoverage:
         text = self._env_example_text()
         # Only uncommented assignments count as active configuration.
         documented = {
-            m.group(1)
-            for m in re.finditer(r"^ARCHEON_([A-Z0-9_]+)=", text, re.MULTILINE)
+            m.group(1) for m in re.finditer(r"^POLYFORGE_([A-Z0-9_]+)=", text, re.MULTILINE)
         }
         known = {name.upper() for name in Settings.model_fields}
         unknown = {d for d in documented if d not in known}

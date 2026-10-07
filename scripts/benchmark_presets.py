@@ -1,4 +1,4 @@
-"""Real-GPU benchmark for the Archeon shape pipeline.
+"""Real-GPU benchmark for the PolyForge shape pipeline.
 
 Usage:
     python scripts/benchmark_presets.py [--preset fast|balanced|detailed|all]
@@ -121,7 +121,7 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--save-dir",
-        default=str(Path(os.environ.get("ARCHEON_SAVE_DIR", "/tmp/archeon_bench"))),
+        default=str(Path(os.environ.get("POLYFORGE_SAVE_DIR", "/tmp/polyforge_bench"))),
         help="Where to write benchmark outputs.",
     )
     parser.add_argument(

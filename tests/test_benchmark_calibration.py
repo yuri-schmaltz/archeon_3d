@@ -5,7 +5,7 @@ and asserts that the documented presets actually match the timings
 we observed on real hardware. CI runs this with the fast preset only
 to keep the budget small; the full sweep is run on a developer
 machine and the resulting JSON is committed to
-``docs/archeon/benchmarks/calibration_<device>.json``.
+``docs/polyforge/benchmarks/calibration_<device>.json``.
 
 The test skips automatically when no benchmark file is present
 (no GPU in CI).
@@ -20,8 +20,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_PATHS = [
-    REPO_ROOT / "docs" / "archeon" / "benchmarks" / "calibration.json",
-    Path("/tmp/archeon_bench/benchmark.json"),
+    REPO_ROOT / "docs" / "polyforge" / "benchmarks" / "calibration.json",
+    Path("/tmp/polyforge_bench/benchmark.json"),
 ]
 
 EXPECTED = {

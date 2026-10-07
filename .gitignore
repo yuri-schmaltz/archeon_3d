@@ -185,9 +185,9 @@ hy3dgen.local.env
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Archeon launcher artefacts (regenerated on every ./launcher.sh run)
-.archeon_launcher.stamp
-.archeon_logs/
+# PolyForge launcher artefacts (regenerated on every ./launcher.sh run)
+.polyforge_launcher.stamp
+.polyforge_logs/
 
 # Generated from the FastAPI schema by `make openapi`.
 # docs/API_DOCUMENTATION.md is the tracked reference; the raw spec is not.

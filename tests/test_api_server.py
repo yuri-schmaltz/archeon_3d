@@ -1,5 +1,5 @@
 """
-Tests for the Archeon API server (hy3dgen.api.server + hy3dgen.api.manager).
+Tests for the PolyForge API server (hy3dgen.api.server + hy3dgen.api.manager).
 
 The previous version of this file defined a *parallel* ``JobManager`` class
 inline and never tested the real ``PriorityRequestManager``. That meant the
@@ -179,7 +179,7 @@ class TestLazyWorkerInit:
 class TestServerApp:
     async def test_app_imports(self):
         from hy3dgen.api.server import app
-        assert app.title == "Archeon 3D Backend"
+        assert app.title == "PolyForge Backend"
 
     async def test_health_endpoint_registered(self):
         from hy3dgen.api.server import app

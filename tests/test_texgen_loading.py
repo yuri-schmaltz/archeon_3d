@@ -1,16 +1,21 @@
 import os
 import shutil
+import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 import pytest
 
-# Mocking modules that might fail without GPU or specific deps
-with patch.dict('sys.modules', {'hy3dgen.texgen.differentiable_renderer.mesh_render': MagicMock()}):
-    try:
-        from hy3dgen.texgen.pipelines import Hunyuan3DPaintPipeline
-    except ImportError:
-        # Fallback if patch fails - likely environment has deps installed
-        from hy3dgen.texgen.pipelines import Hunyuan3DPaintPipeline
+# Mocking modules that might fail without GPU or specific deps.
+# NOTE: this mock is intentionally left in sys.modules (not patch.dict).
+# patch.dict restores sys.modules on exit, which unregisters extension
+# modules imported during the texture import (numpy/torch) and breaks every
+# later heavy import in the same pytest process.
+sys.modules["hy3dgen.texgen.differentiable_renderer.mesh_render"] = MagicMock()
+try:
+    from hy3dgen.texgen.pipelines import Hunyuan3DPaintPipeline
+except ImportError:
+    # Fallback if patch fails - likely environment has deps installed
+    from hy3dgen.texgen.pipelines import Hunyuan3DPaintPipeline
 
 class TestTexGenLoading:
     @pytest.fixture

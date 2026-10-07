@@ -1,5 +1,5 @@
 """
-Tests for the Archeon API Pydantic schemas (hy3dgen.api.schemas).
+Tests for the PolyForge API Pydantic schemas (hy3dgen.api.schemas).
 
 These tests validate the discriminated-union ``JobRequest`` and the response
 models. They do not require GPU or model loading — only pydantic.
@@ -205,7 +205,7 @@ class TestJobResponse:
             status=JobStatus.COMPLETED,
             created_at="2025-01-01T00:00:00",
             completed_at="2025-01-01T00:01:00",
-            file_path="/cache/hy3dgen/archeon/abc.glb",
+            file_path="/cache/hy3dgen/polyforge/abc.glb",
         )
         data = resp.model_dump()
         assert data["status"] == "completed"

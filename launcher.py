@@ -41,7 +41,7 @@ from hy3dgen.shapegen.pipelines import export_to_trimesh
 import logging
 import logging.handlers
 
-# --- Archeon launcher constants ---
+# --- PolyForge launcher constants ---
 # Resolve the launcher directory once, at import time, so every helper below
 # can build absolute paths regardless of the process' CWD. This is the
 # single source of truth for asset/template locations — fixes the bug
@@ -50,7 +50,7 @@ import logging.handlers
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(CURRENT_DIR, 'assets')
 
-# --- Unified logging for Archeon Launcher ---
+# --- Unified logging for PolyForge Launcher ---
 # On Windows, prefer %LOCALAPPDATA% (canonical per-user app state dir) over
 # the XDG-style ~/.local/state, which would end up under %USERPROFILE% and
 # be tied to a roaming profile.
@@ -196,7 +196,7 @@ def get_t2i_worker():
     if t2i_worker is None and args.enable_t23d:
         from hy3dgen.text2image import HunyuanDiTPipeline
         logger.info("Initializing Text-to-Image Generator...")
-        t2i_worker = HunyuanDiTPipeline('Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled')
+        t2i_worker = HunyuanDiTPipeline()
         HAS_T2I = True
         # Memory Management
         pipe = offload.extract_models("t2i_worker", t2i_worker)
@@ -391,7 +391,7 @@ def _gen_shape(
         worker = get_t2i_worker()
         if worker is None:
             raise gr.Error("Text to 3D is disabled.")
-        image = worker(caption)
+        image = worker(caption, seed=seed)
         time_meta['text2image'] = time.time() - start_time
 
     # Auto-detect MV mode based on inputs
@@ -564,7 +564,7 @@ def build_app():
         HTML_OUTPUT_PLACEHOLDER, INPUT_MESH_HTML, example_is, example_ts, example_mvs, SUPPORTED_FORMATS, \
         HAS_TEXTUREGEN, HAS_T2I
 
-    archeon_theme = gr.themes.Soft(
+    polyforge_theme = gr.themes.Soft(
         primary_hue="indigo",
         secondary_hue="blue",
         neutral_hue="slate",
@@ -688,11 +688,12 @@ def build_app():
     }
     """
 
-    with gr.Blocks(theme=archeon_theme, title='Archeon 3D Launcher', analytics_enabled=False, css=custom_css) as demo:
+    with gr.Blocks(theme=polyforge_theme, title='PolyForge Launcher — Do prompt ao polígono', analytics_enabled=False, css=custom_css) as demo:
         with gr.Column(elem_id="header-container"):
             gr.HTML(f"""
             <div style="text-align: center; margin-bottom: 0.2rem; margin-top: 0.2rem;">
-                <h1 style="font-size: 1.8rem; margin-bottom: 0px;" class="archeon-header">ARCHEON 3D</h1>
+                <h1 style="font-size: 1.8rem; margin-bottom: 0px;" class="polyforge-header">POLYFORGE</h1>
+                <p style="opacity:0.6;margin:0;font-size:0.85rem;letter-spacing:0.15em;">DO PROMPT AO POLÍGONO</p>
             </div>
             """)
 
@@ -802,13 +803,13 @@ def build_app():
 
         gr.HTML(f"""
         <div align="center" style="color: #64748b; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1rem; font-size: 0.8rem;">
-            Archeon 3D Engine &bull; Shape: {args.model_path}/{args.subfolder} &bull; Texture: {'Disabled' if args.disable_tex else 'Vanguard-H3D (Ready)'}
+            PolyForge Engine &bull; Shape: {args.model_path}/{args.subfolder} &bull; Texture: {'Disabled' if args.disable_tex else 'Vanguard-H3D (Ready)'}
             <br>
-            <span style="opacity: 0.5;">Based on Tencent Hunyuan3D-2.0 | Archeon Core Infrastructure</span>
+            <span style="opacity: 0.5;">Based on Tencent Hunyuan3D-2.0 | PolyForge Core</span>
         </div>
         """)
 
-        # Warnings removed for cleaned Archeon UI
+        # Warnings removed for cleaned PolyForge UI
 
         tab_ip.select(fn=lambda: gr.update(selected='tab_img_gallery'), outputs=gallery)
         tab_tp.select(fn=lambda: gr.update(selected='tab_txt_gallery'), outputs=gallery)

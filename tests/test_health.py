@@ -18,68 +18,68 @@ def reload_config(monkeypatch):
 
 class TestGetBindHost:
     def test_default_is_localhost(self, monkeypatch, reload_config):
-        monkeypatch.delenv("ARCHEON_HOST", raising=False)
-        monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_HOST", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
         cfg = reload_config()
         assert cfg.get_bind_host() == "127.0.0.1"
 
     def test_api_key_unlocks_wildcard(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_API_KEY", "x")
-        monkeypatch.delenv("ARCHEON_HOST", raising=False)
+        monkeypatch.setenv("POLYFORGE_API_KEY", "x")
+        monkeypatch.delenv("POLYFORGE_HOST", raising=False)
         cfg = reload_config()
         assert cfg.get_bind_host() == "0.0.0.0"
 
     def test_explicit_host_overrides_api_key(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_API_KEY", "x")
-        monkeypatch.setenv("ARCHEON_HOST", "10.0.0.1")
+        monkeypatch.setenv("POLYFORGE_API_KEY", "x")
+        monkeypatch.setenv("POLYFORGE_HOST", "10.0.0.1")
         cfg = reload_config()
         assert cfg.get_bind_host() == "10.0.0.1"
 
 
 class TestGetBindPort:
     def test_default(self, monkeypatch, reload_config):
-        monkeypatch.delenv("ARCHEON_PORT", raising=False)
+        monkeypatch.delenv("POLYFORGE_PORT", raising=False)
         cfg = reload_config()
         assert cfg.get_bind_port() == 8081
 
     def test_custom(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_PORT", "9999")
+        monkeypatch.setenv("POLYFORGE_PORT", "9999")
         cfg = reload_config()
         assert cfg.get_bind_port() == 9999
 
     def test_invalid_falls_back(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_PORT", "not-a-number")
+        monkeypatch.setenv("POLYFORGE_PORT", "not-a-number")
         cfg = reload_config()
         assert cfg.get_bind_port() == 8081
 
 
 class TestGetLogLevel:
     def test_default_info(self, monkeypatch, reload_config):
-        monkeypatch.delenv("ARCHEON_LOG_LEVEL", raising=False)
+        monkeypatch.delenv("POLYFORGE_LOG_LEVEL", raising=False)
         cfg = reload_config()
         assert cfg.get_log_level() == "INFO"
 
     def test_uppercased(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_LOG_LEVEL", "debug")
+        monkeypatch.setenv("POLYFORGE_LOG_LEVEL", "debug")
         cfg = reload_config()
         assert cfg.get_log_level() == "DEBUG"
 
 
 class TestGetLogFile:
     def test_default_none(self, monkeypatch, reload_config):
-        monkeypatch.delenv("ARCHEON_LOG_FILE", raising=False)
+        monkeypatch.delenv("POLYFORGE_LOG_FILE", raising=False)
         cfg = reload_config()
         assert cfg.get_log_file() is None
 
     def test_empty_string_is_none(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_LOG_FILE", "")
+        monkeypatch.setenv("POLYFORGE_LOG_FILE", "")
         cfg = reload_config()
         assert cfg.get_log_file() is None
 
     def test_set(self, monkeypatch, reload_config):
-        monkeypatch.setenv("ARCHEON_LOG_FILE", "/var/log/archeon.log")
+        monkeypatch.setenv("POLYFORGE_LOG_FILE", "/var/log/polyforge.log")
         cfg = reload_config()
-        assert cfg.get_log_file() == "/var/log/archeon.log"
+        assert cfg.get_log_file() == "/var/log/polyforge.log"
 
 
 class TestConfigureLogging:
@@ -91,9 +91,9 @@ class TestConfigureLogging:
         assert logging.getLogger().level <= logging.INFO
 
     def test_runs_with_file(self, tmp_path, monkeypatch, reload_config):
-        """When ARCHEON_LOG_FILE is set, the file handler is created."""
-        log_file = tmp_path / "archeon.log"
-        monkeypatch.setenv("ARCHEON_LOG_FILE", str(log_file))
+        """When POLYFORGE_LOG_FILE is set, the file handler is created."""
+        log_file = tmp_path / "polyforge.log"
+        monkeypatch.setenv("POLYFORGE_LOG_FILE", str(log_file))
         cfg = reload_config()
         cfg.configure_logging()
         # Emit something to make sure the file gets touched.

@@ -19,6 +19,12 @@ import numpy as np
 import torch
 from diffusers import AutoPipelineForText2Image
 
+from hy3dgen.inference import DEFAULT_T2I_MODEL as T2I_MODEL_ID
+
+# The reference-image prompt is intentionally short: only this prefix is
+# combined with the fixed style suffix below.
+MAX_PROMPT_CHARS = 60
+
 
 def seed_everything(seed):
     random.seed(seed)
@@ -28,40 +34,41 @@ def seed_everything(seed):
 
 
 class HunyuanDiTPipeline:
-    def __init__(
-        self,
-        model_path="Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled",
-        device='cpu'
-    ):
-        torch.set_default_device('cpu')
-        self.device = device
+    def __init__(self, model_path=T2I_MODEL_ID, device="cpu"):
+        # Keep this pipeline on CPU: the T2I weights do not fit alongside
+        # the shape pipeline on a 12 GB GPU. ``device`` is retained for API
+        # compatibility and documents the caller's requested device.
+        torch.set_default_device("cpu")
+        self.requested_device = device
         self.pipe = AutoPipelineForText2Image.from_pretrained(
             model_path,
             torch_dtype=torch.float16,
             enable_pag=True,
-            pag_applied_layers=["blocks.(16|17|18|19)"]
-        ) # .to(device) #  needed to avoid displaying the warning
+            pag_applied_layers=["blocks.(16|17|18|19)"],
+        )  # .to(device) #  needed to avoid displaying the warning
         self.pos_txt = ", white background, 3D style, best quality"
-        self.neg_txt = "text, close-up, cropped, out of frame, worst quality, low quality, JPEG artifacts, ugly, duplicate, morbid, " \
-                       "mutilated, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, " \
-                       "bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, " \
-                       "extra arms, extra legs, fused fingers, too many fingers, long neck"
+        self.neg_txt = (
+            "text, close-up, cropped, out of frame, worst quality, low quality, JPEG artifacts, ugly, duplicate, morbid, "
+            "mutilated, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, "
+            "bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, "
+            "extra arms, extra legs, fused fingers, too many fingers, long neck"
+        )
 
     def compile(self):
         # accelarate hunyuan-dit transformer,first inference will cost long time
-        torch.set_float32_matmul_precision('high')
+        torch.set_float32_matmul_precision("high")
         self.pipe.transformer = torch.compile(self.pipe.transformer, fullgraph=True)
         # self.pipe.vae.decode = torch.compile(self.pipe.vae.decode, fullgraph=True)
         generator = torch.Generator(device=self.pipe.device)  # infer once for hot-start
-        out_img = self.pipe(
-            prompt='Sailor Moon',
-            negative_prompt='blurry',
+        _ = self.pipe(
+            prompt="Sailor Moon",
+            negative_prompt="blurry",
             num_inference_steps=25,
             pag_scale=1.3,
             width=1024,
             height=1024,
             generator=generator,
-            return_dict=False
+            return_dict=False,
         )[0][0]
 
     @torch.no_grad()
@@ -75,13 +82,13 @@ class HunyuanDiTPipeline:
         generator = torch.Generator(device=self.pipe.device)
         generator = generator.manual_seed(int(seed))
         out_img = self.pipe(
-            prompt=prompt[:60] + self.pos_txt,
+            prompt=prompt[:MAX_PROMPT_CHARS] + self.pos_txt,
             negative_prompt=self.neg_txt,
             num_inference_steps=25,
             pag_scale=1.3,
             width=1024,
             height=1024,
             generator=generator,
-            return_dict=False
+            return_dict=False,
         )[0][0]
         return out_img

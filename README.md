@@ -57,7 +57,7 @@ We systematically evaluate our models, showing that Hunyuan3D 2.0 outperforms pr
 including the open-source models and closed-source models in geometry details, condition alignment, texture quality, and
 e.t.c.
 
-## How to run the Archeon Launcher
+## How to run the PolyForge Launcher
 1) Follow the installation instructions below
 
 2) Enter either one of the commande lines in bash session
@@ -82,35 +82,35 @@ To run the original Hunyuan3D-2 image to 3D generator:
 python launcher.py --h2
 ```
 
-## How to run the Archeon API + frontend (split stack)
+## How to run the PolyForge API + frontend (split stack)
 
-The `archeon_frontend/` React app talks to the FastAPI backend over HTTP.
+The `polyforge_frontend/` React app talks to the FastAPI backend over HTTP.
 Run them as two separate processes:
 
 ```bash
-# Terminal 1 — backend (defaults: 0.0.0.0:9000 if ARCHEON_API_KEY is set, else 127.0.0.1:9000)
+# Terminal 1 — backend (defaults: 0.0.0.0:9000 if POLYFORGE_API_KEY is set, else 127.0.0.1:9000)
 hy3dgen-api --port 9000
 
 # Terminal 2 — frontend dev server (http://localhost:5173)
-cd archeon_frontend
+cd polyforge_frontend
 cp .env.example .env       # then edit VITE_API_URL if your backend is not on 127.0.0.1:9000
 npm install
 npm run dev
 ```
 
 The frontend reads `VITE_API_URL` (default `http://localhost:9000`) and
-appends `/v1` to it. See `archeon_frontend/.env.example` for the full list
+appends `/v1` to it. See `polyforge_frontend/.env.example` for the full list
 of environment variables.
 
 For production:
 
 ```bash
 # Build a static bundle
-cd archeon_frontend && npm run build
+cd polyforge_frontend && npm run build
 
 # Serve the bundle with any static file server (nginx, Caddy, etc.) and
 # point it at the backend. The backend's CORS allow-list is configured
-# via the ARCHEON_CORS_ORIGINS env var (comma-separated origins).
+# via the POLYFORGE_CORS_ORIGINS env var (comma-separated origins).
 ```
 
 To run the entire stack in Docker, see `docker-compose.yml` at the project
@@ -254,7 +254,7 @@ Hunyuan3D-2 Series
 You may follow the next steps to use Hunyuan3D 2.0 via:
 
 - [Code](#code-usage)
-- [Archeon Launcher](#archeon-launcher)
+- [PolyForge Launcher](#polyforge-launcher)
 - [API Server](#api-server)
 - [Blender Addon](#blender-addon)
 - [Official Site](#official-site)

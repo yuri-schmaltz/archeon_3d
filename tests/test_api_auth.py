@@ -1,5 +1,5 @@
 """
-Tests for the Archeon backend security middleware.
+Tests for the PolyForge backend security middleware.
 
 These run against a FastAPI ``TestClient`` with the GPU-bound routes mocked
 out (the manager is replaced with a stub). The point of these tests is to
@@ -35,7 +35,7 @@ def client(monkeypatch):
     from hy3dgen.api import routes as routes_module
 
     # Reset env-derived config before each test.
-    for k in ("ARCHEON_API_KEY", "ARCHEON_CORS_ORIGINS", "ARCHEON_ALLOW_CREDENTIALS"):
+    for k in ("POLYFORGE_API_KEY", "POLYFORGE_CORS_ORIGINS", "POLYFORGE_ALLOW_CREDENTIALS"):
         monkeypatch.delenv(k, raising=False)
 
     class _StubManager:
@@ -91,7 +91,7 @@ class TestAuthDisabled:
 
 class TestAuthEnabled:
     def test_missing_header_returns_401(self, client, monkeypatch):
-        monkeypatch.setenv("ARCHEON_API_KEY", "secret-abc")
+        monkeypatch.setenv("POLYFORGE_API_KEY", "secret-abc")
         # Reload the dependency since it reads the env at request time.
         from hy3dgen.api import auth as auth_module
         monkeypatch.setattr(auth_module, "get_api_key", lambda: "secret-abc")
@@ -134,31 +134,31 @@ class TestAuthEnabled:
         assert "model_loaded" in body
         assert "queue_size" in body
         assert "auth_required" in body
-        # When ARCHEON_API_KEY is set (via the monkeypatch above) the
+        # When POLYFORGE_API_KEY is set (via the monkeypatch above) the
         # endpoint should reflect that.
         assert body["auth_required"] is True
 
 
 class TestGetApiKey:
     def test_unset_returns_none(self, monkeypatch):
-        monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
         from hy3dgen.api import auth as auth_module
         monkeypatch.setattr(auth_module, "get_api_key", auth_module.get_api_key.__wrapped__ if hasattr(auth_module.get_api_key, "__wrapped__") else auth_module.get_api_key)
         # Just confirm the function shape under clean env.
         import importlib
         importlib.reload(auth_module)
-        monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
         assert auth_module.get_api_key() is None
 
     def test_set_returns_value(self, monkeypatch):
-        monkeypatch.setenv("ARCHEON_API_KEY", "abc")
+        monkeypatch.setenv("POLYFORGE_API_KEY", "abc")
         from hy3dgen.api import auth as auth_module
         import importlib
         importlib.reload(auth_module)
         assert auth_module.get_api_key() == "abc"
 
     def test_blank_returns_none(self, monkeypatch):
-        monkeypatch.setenv("ARCHEON_API_KEY", "   ")
+        monkeypatch.setenv("POLYFORGE_API_KEY", "   ")
         from hy3dgen.api import auth as auth_module
         import importlib
         importlib.reload(auth_module)
@@ -171,7 +171,7 @@ class TestGetApiKey:
 
 class TestCorsOrigins:
     def test_default_is_wildcard(self, monkeypatch):
-        monkeypatch.delenv("ARCHEON_CORS_ORIGINS", raising=False)
+        monkeypatch.delenv("POLYFORGE_CORS_ORIGINS", raising=False)
         from hy3dgen.api import config as config_module
         import importlib
         importlib.reload(config_module)
@@ -179,7 +179,7 @@ class TestCorsOrigins:
 
     def test_explicit_list(self, monkeypatch):
         monkeypatch.setenv(
-            "ARCHEON_CORS_ORIGINS",
+            "POLYFORGE_CORS_ORIGINS",
             "http://localhost:5173, http://app.example.com",
         )
         from hy3dgen.api import config as config_module
@@ -191,7 +191,7 @@ class TestCorsOrigins:
         ]
 
     def test_blank_entries_are_skipped(self, monkeypatch):
-        monkeypatch.setenv("ARCHEON_CORS_ORIGINS", "http://a,,http://b,")
+        monkeypatch.setenv("POLYFORGE_CORS_ORIGINS", "http://a,,http://b,")
         from hy3dgen.api import config as config_module
         import importlib
         importlib.reload(config_module)
@@ -200,14 +200,14 @@ class TestCorsOrigins:
 
 class TestBindHost:
     def test_default_is_localhost(self, monkeypatch):
-        monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
+        monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
         from hy3dgen.api import config as config_module
         import importlib
         importlib.reload(config_module)
         assert config_module.get_bind_host() == "127.0.0.1"
 
     def test_api_key_unlocks_wildcard(self, monkeypatch):
-        monkeypatch.setenv("ARCHEON_API_KEY", "x")
+        monkeypatch.setenv("POLYFORGE_API_KEY", "x")
         from hy3dgen.api import config as config_module
         import importlib
         importlib.reload(config_module)

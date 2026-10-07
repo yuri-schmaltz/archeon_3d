@@ -88,14 +88,14 @@ _DEFAULT_PRESETS: dict[str, dict[str, Any]] = {
 def _load_calibrated_presets() -> dict[str, dict[str, Any]]:
     """Load the preset table from the calibration JSON if present.
 
-    The calibration JSON lives at ``docs/archeon/benchmarks/calibration.json``
-    or ``/tmp/archeon_bench/benchmark.json``. Missing keys fall back to
+    The calibration JSON lives at ``docs/polyforge/benchmarks/calibration.json``
+    or ``/tmp/polyforge_bench/benchmark.json``. Missing keys fall back to
     the documented defaults so a build with no benchmark artifact
     keeps working unchanged.
     """
     candidates = [
-        Path("docs/archeon/benchmarks/calibration.json"),
-        Path("/tmp/archeon_bench/benchmark.json"),
+        Path("docs/polyforge/benchmarks/calibration.json"),
+        Path("/tmp/polyforge_bench/benchmark.json"),
     ]
     for path in candidates:
         if not path.exists():
@@ -144,6 +144,7 @@ class InferenceService:
         model_subfolder: str = "hunyuan3d-dit-v2-mini-turbo",
         multiview_model: str = "tencent/Hunyuan3D-2mv",
         multiview_subfolder: str = "hunyuan3d-dit-v2-mv",
+        t2i_model: str | None = None,
     ) -> None:
         self.device = device
         self.save_dir = save_dir
@@ -151,6 +152,7 @@ class InferenceService:
         self.model_subfolder = model_subfolder
         self.multiview_model = multiview_model
         self.multiview_subfolder = multiview_subfolder
+        self.t2i_model = t2i_model
 
         self._queue: asyncio.Queue[InferenceJob | None] = asyncio.Queue()
         self._worker: Any = None  # ModelWorker, lazily imported
@@ -263,6 +265,7 @@ class InferenceService:
                     subfolder=self.model_subfolder,
                     multiview_model_path=self.multiview_model,
                     multiview_subfolder=self.multiview_subfolder,
+                    t2i_model_path=self.t2i_model,
                     enable_tex=True,
                     enable_t2i=True,
                 )
@@ -307,41 +310,24 @@ class InferenceService:
         "fast" label.
         """
         worker = self._worker
-        shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
-        tex_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
-        t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
-        mv_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
-        return {
-            "modes": {
-                "text": {
-                    "available": bool(t2i_loaded or shape_loaded),
-                    "reason": None if (t2i_loaded or shape_loaded) else "Shape/text-to-image model not loaded.",
-                    "requires": ["text_to_image"] if not t2i_loaded else [],
+        # Imported here so this module stays importable when tests stub
+        # ``hy3dgen.inference`` for isolation.
+        from hy3dgen.inference import model_capability_snapshot, worker_model_state
+
+        snap = model_capability_snapshot(
+            worker_model_state(
+                worker,
+                {
+                    "shape_model": self.model_path,
+                    "shape_subfolder": self.model_subfolder,
+                    "multiview_model": self.multiview_model,
+                    "multiview_subfolder": self.multiview_subfolder,
+                    "t2i_model": self.t2i_model,
                 },
-                "image": {
-                    "available": bool(shape_loaded),
-                    "reason": None if shape_loaded else "Shape model not loaded.",
-                    "requires": [],
-                },
-                "multiview": {
-                    "available": bool(mv_loaded or shape_loaded),
-                    "reason": None if (mv_loaded or shape_loaded) else "Multiview model not loaded.",
-                    "requires": [],
-                },
-                "texture": {
-                    "available": bool(tex_loaded or shape_loaded),
-                    "reason": None if (tex_loaded or shape_loaded) else "Texture model not loaded.",
-                    "requires": [],
-                },
-            },
-            "models": {
-                "shape": {"id": self.model_path, "subfolder": self.model_subfolder, "loaded": shape_loaded},
-                "multiview": {"id": self.multiview_model, "subfolder": self.multiview_subfolder, "loaded": mv_loaded},
-                "texture": {"id": self.model_path, "subfolder": None, "loaded": tex_loaded},
-                "text_to_image": {"id": self.model_path, "subfolder": None, "loaded": t2i_loaded},
-            },
-            "presets": _load_calibrated_presets(),
-        }
+            )
+        )
+        snap["presets"] = _load_calibrated_presets()
+        return snap
 
     # ------------------------------------------------------------------
     # Internals

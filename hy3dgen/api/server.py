@@ -36,7 +36,7 @@ logger = logging.getLogger("hy3dgen.api.server")
 async def lifespan(app: FastAPI):
     """Manage application lifecycle (start/stop background workers)."""
     configure_logging()
-    logger.info("Archeon API starting on %s:%s", get_bind_host(), get_bind_port())
+    logger.info("PolyForge API starting on %s:%s", get_bind_host(), get_bind_port())
     # Initialize the persistent store (or None to disable).
     db_path = get_job_db_path()
     store = JobStore(db_path) if db_path else None
@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
             model_subfolder=settings.model_subfolder,
             multiview_model=settings.multiview_model,
             multiview_subfolder=settings.multiview_subfolder,
+            t2i_model=settings.t2i_model,
         )
     app.state.inference_service = service
     app.state.manager = PriorityRequestManager(
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
         model_subfolder=settings.model_subfolder,
         multiview_model=settings.multiview_model,
         multiview_subfolder=settings.multiview_subfolder,
+        t2i_model=settings.t2i_model,
         store=store,
         inference_service=service,
     )
@@ -94,16 +96,16 @@ limiter = Limiter(
 )
 
 app = FastAPI(
-    title="Archeon 3D Backend",
-    description="High-performance local 3D generation backend with priority queuing and polymorphic API.",
+    title="PolyForge Backend",
+    description="High-performance local 3D generation backend — do prompt ao polígono. Priority queuing + polymorphic API.",
     version=__version__,
     lifespan=lifespan,
 )
 
 # CORS: spec-compliant. When origins == ['*'] we must disable credentials
 # (browsers reject the combination). For real deployments, set
-# ARCHEON_CORS_ORIGINS to a comma-separated allow-list and optionally
-# ARCHEON_ALLOW_CREDENTIALS=true.
+# POLYFORGE_CORS_ORIGINS to a comma-separated
+# allow-list and optionally POLYFORGE_ALLOW_CREDENTIALS=true.
 _cors_origins = get_cors_origins()
 # ``*`` + credentials is rejected by browsers, so force it off in that case.
 _cors_allow_credentials = settings.allow_credentials and _cors_origins != ["*"]
@@ -197,6 +199,12 @@ async def readiness_check():
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
+# Health/readiness/metrics and the SPA shell are operational traffic, not API
+# usage. Exempt them so monitoring and normal page loads cannot consume the
+# per-IP API budget.
+limiter.exempt(health_check)
+limiter.exempt(readiness_check)
+
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics_endpoint() -> Response:
@@ -205,8 +213,11 @@ async def metrics_endpoint() -> Response:
     return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
 
+limiter.exempt(metrics_endpoint)
+
+
 # Body size limit: bail out early if a request advertises a Content-Length
-# over the configured cap (ARCHEON_MAX_BODY_BYTES, default 64 MiB to match
+# over the configured cap (POLYFORGE_MAX_BODY_BYTES, default 64 MiB to match
 # the nginx setting). Without this guard nginx (or the default uvicorn
 # limit) would buffer an unbounded payload into a temp file before we
 # even see the request, wasting resources and giving us a worse error
@@ -243,8 +254,8 @@ class _AuthStaticFiles(StaticFiles):
        token is valid for ``ttl_seconds`` and is bound to a single
        path.
 
-    When ``ARCHEON_API_KEY`` is empty and no signing key is configured
-    the check is a no-op (local dev).
+    When ``POLYFORGE_API_KEY`` is empty
+    and no signing key is configured the check is a no-op (local dev).
     """
 
     async def get_response(self, path, scope):
@@ -291,7 +302,8 @@ app.include_router(router, dependencies=[Depends(require_api_key)])
 # running ``npm run build`` we silently skip the mount and let the
 # user get a useful JSON 404. The launcher always builds the
 # frontend, so this only affects exotic deployments.
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "archeon_frontend" / "dist"
+_BASE = Path(__file__).resolve().parent.parent.parent
+_FRONTEND_DIST = _BASE / "polyforge_frontend" / "dist"
 if _FRONTEND_DIST.is_dir():
     _assets_dir = _FRONTEND_DIST / "assets"
     if _assets_dir.is_dir():
@@ -302,6 +314,8 @@ if _FRONTEND_DIST.is_dir():
     async def _serve_index() -> FileResponse:
         """Serve the Vite ``index.html`` for the document root."""
         return FileResponse(_FRONTEND_DIST / "index.html")
+
+    limiter.exempt(_serve_index)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def _serve_spa(full_path: str) -> Response:
@@ -322,10 +336,12 @@ if _FRONTEND_DIST.is_dir():
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_FRONTEND_DIST / "index.html")
+
+    limiter.exempt(_serve_spa)
 else:
     logger.info(
         "Frontend dist/ not found at %s; root URL will return 404. "
-        "Run 'cd archeon_frontend && npm run build' to enable the UI.",
+        "Run 'cd polyforge_frontend && npm run build' to enable the UI.",
         _FRONTEND_DIST,
     )
 
@@ -348,34 +364,34 @@ def _reject_multi_worker(parser, workers: int) -> None:
 
 
 def main():
-    """Console entry point declared in pyproject.toml: ``hy3dgen-api``.
+    """Console entry point declared in pyproject.toml: ``hy3dgen-api`` / ``polyforge-api``.
 
-    CLI flags take precedence over the ARCHEON_HOST / ARCHEON_PORT env
+    CLI flags take precedence over the POLYFORGE_HOST / POLYFORGE_PORT env
     vars, which themselves default to ``127.0.0.1:8081``.
     """
     import argparse
 
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="Archeon 3D Backend API server")
+    parser = argparse.ArgumentParser(description="PolyForge Backend API server")
     parser.add_argument(
         "--port",
         type=int,
         default=get_bind_port(),
-        help="Port to listen on (overrides ARCHEON_PORT, default 8081).",
+        help="Port to listen on (overrides POLYFORGE_PORT, default 8081).",
     )
     parser.add_argument(
         "--host",
         type=str,
         default=get_bind_host(),
-        help="Bind host (overrides ARCHEON_HOST, default 127.0.0.1).",
+        help="Bind host (overrides POLYFORGE_HOST, default 127.0.0.1).",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=settings.workers,
         help=(
-            "Number of uvicorn workers (overrides ARCHEON_WORKERS). "
+            "Number of uvicorn workers (overrides POLYFORGE_WORKERS). "
             "Only 1 is supported: each worker would own a separate "
             "inference queue, its own copy of the model in VRAM, and "
             "would rehydrate the same SQLite file independently."

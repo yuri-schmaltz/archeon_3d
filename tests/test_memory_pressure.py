@@ -85,7 +85,7 @@ def _seed_10k(db_path: str):
 @pytest.fixture(scope="session")
 def _10k_server():
     """Session-scoped fixture: seed a 10k-job DB and time a raw rehydrate."""
-    db = "/tmp/archeon-10k.db"
+    db = "/tmp/polyforge-10k.db"
 
     print("\n[10k seed] starting (this takes a few seconds)...")
     t0 = time.perf_counter()
@@ -147,11 +147,11 @@ async def test_10k_list_endpoint(_10k_server):
     repo_root = Path(__file__).resolve().parent.parent
 
     env = os.environ.copy()
-    env["ARCHEON_JOB_DB"] = _10k_server["db"]
-    env["ARCHEON_HOST"] = "127.0.0.1"
-    env["ARCHEON_PORT"] = "8767"
-    env["ARCHEON_LOG_LEVEL"] = "error"
-    env["ARCHEON_RATE_LIMIT"] = "false"
+    env["POLYFORGE_JOB_DB"] = _10k_server["db"]
+    env["POLYFORGE_HOST"] = "127.0.0.1"
+    env["POLYFORGE_PORT"] = "8767"
+    env["POLYFORGE_LOG_LEVEL"] = "error"
+    env["POLYFORGE_RATE_LIMIT"] = "false"
     env["PYTHONPATH"] = str(repo_root)
 
     proc = subprocess.Popen(

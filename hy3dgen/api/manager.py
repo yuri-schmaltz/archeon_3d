@@ -63,6 +63,7 @@ class PriorityRequestManager:
         model_subfolder: str = "hunyuan3d-dit-v2-mini-turbo",
         multiview_model: str = "tencent/Hunyuan3D-2mv",
         multiview_subfolder: str = "hunyuan3d-dit-v2-mv",
+        t2i_model: str | None = None,
         inference_service: "InferenceService | None" = None,
     ):
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -76,6 +77,7 @@ class PriorityRequestManager:
         self.model_subfolder = model_subfolder
         self.multiview_model = multiview_model
         self.multiview_subfolder = multiview_subfolder
+        self.t2i_model = t2i_model
         self.max_age_seconds = max_age_seconds
         self._shutdown_event = asyncio.Event()
         self._worker_task: asyncio.Task | None = None
@@ -473,6 +475,7 @@ class PriorityRequestManager:
                     subfolder=self.model_subfolder,
                     multiview_model_path=self.multiview_model,
                     multiview_subfolder=self.multiview_subfolder,
+                    t2i_model_path=self.t2i_model,
                     enable_tex=True,
                     enable_t2i=True,
                 )
@@ -492,8 +495,6 @@ class PriorityRequestManager:
             import threading
 
             def _runner() -> None:
-                from hy3dgen.inference import ModelWorker
-
                 try:
                     self.worker = ModelWorker(
                         device=self.device,
@@ -501,6 +502,7 @@ class PriorityRequestManager:
                         subfolder=self.model_subfolder,
                         multiview_model_path=self.multiview_model,
                         multiview_subfolder=self.multiview_subfolder,
+                        t2i_model_path=self.t2i_model,
                         enable_tex=True,
                         enable_t2i=True,
                     )
@@ -545,6 +547,15 @@ class PriorityRequestManager:
         self._track_persist_task(task)
         self._notify(job)
 
+    @staticmethod
+    def _body_byte_limit() -> int | None:
+        # Imported here so the manager stays importable when tests stub
+        # ``hy3dgen.api.config`` for isolation. The module object (not a
+        # bound ``settings`` value) is used so config reloads stay visible.
+        from hy3dgen.api import config as config_module
+
+        return config_module.settings.max_body_bytes or None
+
     def capabilities(self) -> dict:
         """Return a snapshot of static + dynamic state for ``/v1/capabilities``.
 
@@ -553,72 +564,36 @@ class PriorityRequestManager:
         timings). Otherwise the legacy worker-introspection path runs.
         Either way the response shape matches ``CapabilitiesResponse``.
         """
+        # Imported here so the manager stays importable when tests stub
+        # ``hy3dgen.inference`` for isolation.
+        from hy3dgen.inference import model_capability_snapshot, worker_model_state
+
         if self.inference_service is not None:
             snap = self.inference_service.capabilities()
         else:
             worker = self.worker
-            shape_loaded = worker is not None and getattr(worker, "pipeline", None) is not None
-            tex_loaded = worker is not None and getattr(worker, "pipeline_tex", None) is not None
-            t2i_loaded = worker is not None and getattr(worker, "pipeline_t2i", None) is not None
-            mv_loaded = worker is not None and getattr(worker, "_shape_mode", None) == "multiview"
-            snap = {
-                "modes": {
-                    "text": {
-                        "available": bool(t2i_loaded or shape_loaded),
-                        "reason": None if (t2i_loaded or shape_loaded) else "Shape/text-to-image model not loaded.",
-                        "requires": ["text_to_image"] if not t2i_loaded else [],
+            snap = model_capability_snapshot(
+                worker_model_state(
+                    worker,
+                    {
+                        "shape_model": self.model_path,
+                        "shape_subfolder": self.model_subfolder,
+                        "multiview_model": self.multiview_model,
+                        "multiview_subfolder": self.multiview_subfolder,
+                        "t2i_model": self.t2i_model,
                     },
-                    "image": {
-                        "available": bool(shape_loaded),
-                        "reason": None if shape_loaded else "Shape model not loaded.",
-                        "requires": [],
-                    },
-                    "multiview": {
-                        "available": bool(mv_loaded or shape_loaded),
-                        "reason": None if (mv_loaded or shape_loaded) else "Multiview model not loaded.",
-                        "requires": [],
-                    },
-                    "texture": {
-                        "available": bool(tex_loaded or shape_loaded),
-                        "reason": None if (tex_loaded or shape_loaded) else "Texture model not loaded.",
-                        "requires": [],
-                    },
-                },
-                "models": {
-                    "shape": {
-                        "id": self.model_path,
-                        "subfolder": self.model_subfolder,
-                        "loaded": shape_loaded,
-                    },
-                    "multiview": {
-                        "id": self.multiview_model,
-                        "subfolder": self.multiview_subfolder,
-                        "loaded": mv_loaded,
-                    },
-                    "texture": {
-                        "id": getattr(worker, "tex_model_path", "tencent/Hunyuan3D-2")
-                        if worker is not None
-                        else "tencent/Hunyuan3D-2",
-                        "subfolder": None,
-                        "loaded": tex_loaded,
-                    },
-                    "text_to_image": {
-                        "id": "tencent/Hunyuan3D-2",
-                        "subfolder": None,
-                        "loaded": t2i_loaded,
-                    },
-                },
-                "presets": {
-                    "fast": {"steps": 5, "guidance": 5.0, "octree_resolution": 192},
-                    "balanced": {"steps": 50, "guidance": 5.0, "octree_resolution": 256},
-                    "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
-                },
+                )
+            )
+            snap["presets"] = {
+                "fast": {"steps": 5, "guidance": 5.0, "octree_resolution": 192},
+                "balanced": {"steps": 50, "guidance": 5.0, "octree_resolution": 256},
+                "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
             }
         snap["limits"] = {
             "image_bytes": 10 * 1024 * 1024,
             "mesh_bytes": 30 * 1024 * 1024,
             "queue_depth": self.max_history or 64,
-            "body_bytes": 64 * 1024 * 1024,
+            "body_bytes": self._body_byte_limit(),
         }
         snap["version"] = __version__
         return snap
@@ -722,9 +697,7 @@ class PriorityRequestManager:
             except OSError as exc:
                 logger.warning(f"Failed to remove {path}: {exc}")
         if removed:
-            logger.info(
-                f"Removed {removed} mesh file(s) older than {max_age_seconds}s."
-            )
+            logger.info(f"Removed {removed} mesh file(s) older than {max_age_seconds}s.")
         return removed
 
     async def cancel_job(self, uid: str) -> None:
@@ -808,7 +781,7 @@ class PriorityRequestManager:
         await self._persist(job)
         self._notify(job)
         span = start_span(
-            "archeon.job.execute",
+            "polyforge.job.execute",
             **{"job.uid": uid, "job.mode": getattr(request, "type", "unknown")},
         )
 
@@ -843,6 +816,7 @@ class PriorityRequestManager:
                     subfolder=self.model_subfolder,
                     multiview_model_path=self.multiview_model,
                     multiview_subfolder=self.multiview_subfolder,
+                    t2i_model_path=self.t2i_model,
                     enable_tex=True,
                     enable_t2i=True,
                 )

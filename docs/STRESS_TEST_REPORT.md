@@ -103,7 +103,7 @@ test.
 
 ## Conclusion
 
-The Archeon 3D stack handled 1000 jobs cleanly across all five
+The PolyForge 3D stack handled 1000 jobs cleanly across all five
 statuses and all four generation modes, with single-digit millisecond
 backend latencies and a sub-second UI render. The lab-instrument
 redesign (PR #11) scales without modification. One latent route-order

@@ -25,9 +25,9 @@ updates:
     labels:
       - "dependencies"
 
-  # Node deps in archeon_frontend/
+  # Node deps in polyforge_frontend/
   - package-ecosystem: "npm"
-    directory: "/archeon_frontend"
+    directory: "/polyforge_frontend"
     schedule:
       interval: "weekly"
       day: "monday"

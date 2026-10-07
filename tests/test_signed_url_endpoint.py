@@ -38,7 +38,7 @@ class _StubManager(PriorityRequestManager):
 
 @pytest.fixture
 def signed_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[TestClient, Path]:
-    monkeypatch.setenv("ARCHEON_API_KEY", "secret-key")
+    monkeypatch.setenv("POLYFORGE_API_KEY", "secret-key")
     # Write a real file in the existing SAVE_DIR (StaticFiles is bound at import time).
     artifact = Path(SAVE_DIR) / "abc-123.glb"
     artifact.write_bytes(b"\x00fake-glb-bytes")
@@ -102,8 +102,8 @@ def test_unknown_job_404(signed_env: tuple[TestClient, Path]) -> None:
 
 
 def test_no_signing_key_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ARCHEON_API_KEY", raising=False)
-    monkeypatch.delenv("ARCHEON_URL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("POLYFORGE_API_KEY", raising=False)
+    monkeypatch.delenv("POLYFORGE_URL_SIGNING_KEY", raising=False)
     stub = _StubManager()
     app = server_module.app
     app.dependency_overrides[get_manager] = lambda: stub

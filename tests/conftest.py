@@ -1,4 +1,5 @@
 """Pytest fixtures for stress tests that need a live server + seeded data."""
+
 import os
 import subprocess
 import sys
@@ -8,9 +9,28 @@ from pathlib import Path
 import pytest
 import requests
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEMO_DB = "/tmp/archeon-stress.db"
+DEMO_DB = "/tmp/polyforge-stress.db"
+
+
+@pytest.fixture(autouse=True)
+def _restore_api_settings():
+    """Rebuild the API Settings singleton after every test.
+
+    Several legacy tests ``importlib.reload(hy3dgen.api.config)`` with
+    monkeypatched env vars, which permanently replaces
+    ``config.settings`` for later tests. Reconstructing it here keeps
+    Settings-backed behaviour hermetic without touching those tests.
+    """
+    from hy3dgen.api import config as config_module
+
+    original_hf_home = os.environ.get("HF_HOME")
+    yield
+    config_module.settings = config_module.Settings(_env_file=None)
+    if original_hf_home is None:
+        os.environ.pop("HF_HOME", None)
+    else:
+        os.environ["HF_HOME"] = original_hf_home
 
 
 def _wait_for_server(url: str, timeout: float = 30.0) -> bool:
@@ -32,10 +52,10 @@ def _running_server():
 
     Yields the base URL. Tears down the process afterwards.
     """
-    import sqlite3
-    import uuid
     import json
     import random
+    import sqlite3
+    import uuid
     from datetime import datetime, timedelta, timezone
 
     # Wipe any old DB
@@ -48,13 +68,19 @@ def _running_server():
 
     # Bootstrap the schema
     import hy3dgen.api.persistence
+
     hy3dgen.api.persistence.JobStore(DEMO_DB)
 
     # Seed 1000 jobs
     db = sqlite3.connect(DEMO_DB)
     random.seed(42)
-    statuses = ["completed"] * 250 + ["failed"] * 350 + ["queued"] * 150 + \
-               ["processing"] * 100 + ["cancelled"] * 150
+    statuses = (
+        ["completed"] * 250
+        + ["failed"] * 350
+        + ["queued"] * 150
+        + ["processing"] * 100
+        + ["cancelled"] * 150
+    )
     random.shuffle(statuses)
     now = datetime.now(timezone.utc)
     rows = []
@@ -91,11 +117,11 @@ def _running_server():
 
     # Start the patched server on port 8766
     env = os.environ.copy()
-    env["ARCHEON_JOB_DB"] = DEMO_DB
-    env["ARCHEON_HOST"] = "127.0.0.1"
-    env["ARCHEON_PORT"] = "8766"
-    env["ARCHEON_LOG_LEVEL"] = "error"
-    env["ARCHEON_RATE_LIMIT"] = "false"
+    env["POLYFORGE_JOB_DB"] = DEMO_DB
+    env["POLYFORGE_HOST"] = "127.0.0.1"
+    env["POLYFORGE_PORT"] = "8766"
+    env["POLYFORGE_LOG_LEVEL"] = "error"
+    env["POLYFORGE_RATE_LIMIT"] = "false"
     env["PYTHONPATH"] = str(REPO_ROOT)
 
     proc = subprocess.Popen(

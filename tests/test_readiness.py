@@ -192,7 +192,7 @@ def test_single_worker_is_accepted():
 
 
 def test_workers_setting_is_wired_to_main():
-    """``ARCHEON_WORKERS`` must actually reach the CLI default."""
+    """``POLYFORGE_WORKERS`` must actually reach the CLI default."""
     from hy3dgen.api.config import Settings
     from hy3dgen.api.server import settings
 

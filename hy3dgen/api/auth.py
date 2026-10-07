@@ -1,8 +1,9 @@
-"""API key authentication for the Archeon backend.
+"""API key authentication for the PolyForge backend.
 
-When ``ARCHEON_API_KEY`` is set, every request to a protected route must
-include a matching ``X-API-Key`` header. When the env var is unset, auth is
-disabled and the server is intended to be bound to ``127.0.0.1`` only.
+When ``POLYFORGE_API_KEY`` is set, every request to a protected route
+must include a matching ``X-API-Key`` header. When the env var is
+unset, auth is disabled and the server is intended to be bound to
+``127.0.0.1`` only.
 
 The check is implemented as a FastAPI dependency so routes can opt in
 explicitly (``/health`` stays open for unauthenticated monitoring), and
@@ -18,16 +19,25 @@ from typing import Annotated
 from dotenv import dotenv_values
 from fastapi import Depends, Header, HTTPException, status
 
+from hy3dgen.api import config as config_module
+
 
 def get_api_key() -> str | None:
-    """Read the configured API key from the environment.
+    """Read the configured API key.
 
+    ``Settings`` is the canonical source, but the process environment is
+    checked first so key rotation does not require reimporting this module.
     Returns None when auth is disabled (no key configured). Callers should
     treat None as "skip auth" rather than "deny".
     """
-    configured = os.environ.get("ARCHEON_API_KEY")
+    configured = os.environ.get("POLYFORGE_API_KEY")
     if configured is None:
-        configured = dotenv_values(".env").get("ARCHEON_API_KEY")
+        configured = config_module.settings.api_key
+    if configured is None:
+        try:
+            configured = dotenv_values(".env").get("POLYFORGE_API_KEY")
+        except Exception:
+            configured = None
     key = (configured or "").strip()
     return key or None
 

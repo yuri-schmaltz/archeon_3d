@@ -1,4 +1,4 @@
-"""Prometheus metrics for the Archeon API.
+"""Prometheus metrics for the PolyForge API.
 
 Counters and gauges are kept as module-level singletons so all
 request paths can update them without dependency injection. The
@@ -28,53 +28,53 @@ REGISTRY: CollectorRegistry | None = None  # None means "use prom default"
 
 # -- Job lifecycle ----------------------------------------------------
 JOBS_SUBMITTED = Counter(
-    "archeon_jobs_submitted_total",
+    "polyforge_jobs_submitted_total",
     "Total number of generation jobs submitted.",
     ["mode"],  # text_to_3d | image_to_3d | multiview | texture_mesh
 )
 JOBS_COMPLETED = Counter(
-    "archeon_jobs_completed_total",
+    "polyforge_jobs_completed_total",
     "Total number of generation jobs that completed successfully.",
 )
 JOBS_FAILED = Counter(
-    "archeon_jobs_failed_total",
+    "polyforge_jobs_failed_total",
     "Total number of generation jobs that failed (per reason).",
     ["reason"],
 )
 JOBS_CANCELLED = Counter(
-    "archeon_jobs_cancelled_total",
+    "polyforge_jobs_cancelled_total",
     "Total number of generation jobs that were cancelled by the user.",
 )
 JOBS_REHYDRATED = Counter(
-    "archeon_jobs_rehydrated_total",
+    "polyforge_jobs_rehydrated_total",
     "Total number of jobs restored from the persistent store on startup.",
 )
 
 # -- Queue + manager state -------------------------------------------
 QUEUE_DEPTH = Gauge(
-    "archeon_queue_depth",
+    "polyforge_queue_depth",
     "Current number of jobs waiting in the priority queue.",
 )
 JOBS_IN_MEMORY = Gauge(
-    "archeon_jobs_in_memory",
+    "polyforge_jobs_in_memory",
     "Number of jobs currently tracked in the manager's in-memory state.",
 )
 JOBS_IN_STORE = Gauge(
-    "archeon_jobs_in_store",
+    "polyforge_jobs_in_store",
     "Number of jobs currently persisted in SQLite (0 if persistence is off).",
 )
 PERSISTENCE_ENABLED = Gauge(
-    "archeon_persistence_enabled",
+    "polyforge_persistence_enabled",
     "1 if SQLite-backed persistence is enabled, else 0.",
 )
 MODEL_LOADED = Gauge(
-    "archeon_model_loaded",
+    "polyforge_model_loaded",
     "1 once the inference worker has been initialised, else 0.",
 )
 
 # -- Latency ----------------------------------------------------------
 JOB_DURATION = Histogram(
-    "archeon_job_duration_seconds",
+    "polyforge_job_duration_seconds",
     "End-to-end duration of completed jobs (queue + processing).",
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),
 )
@@ -104,7 +104,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # OpenTelemetry tracing (optional)
 # ---------------------------------------------------------------------------
-# Tracing is opt-in: if the OTel SDK is installed AND ``ARCHEON_OTEL_ENABLED=true``
+# Tracing is opt-in: if the OTel SDK is installed AND ``POLYFORGE_OTEL_ENABLED=true``
 # is set, spans are emitted for job lifecycle events. Otherwise the helpers
 # below are no-ops, so the rest of the code can call them unconditionally.
 

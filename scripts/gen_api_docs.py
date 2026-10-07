@@ -76,12 +76,7 @@ def _clean(text: str) -> str:
 def _body_params(operation: dict[str, Any], schemas: dict[str, Any]) -> list[dict[str, Any]]:
     """Resolve a JSON body into a flat list of field descriptions."""
     body = operation.get("requestBody", {})
-    ref = (
-        body.get("content", {})
-        .get("application/json", {})
-        .get("schema", {})
-        .get("$ref", "")
-    )
+    ref = body.get("content", {}).get("application/json", {}).get("schema", {}).get("$ref", "")
     if not ref:
         return []
     name = ref.rsplit("/", 1)[-1]
@@ -148,7 +143,7 @@ def render(spec: dict[str, Any]) -> str:
     # -- auth ----------------------------------------------------------
     a("## Authentication")
     a("")
-    a("When `ARCHEON_API_KEY` is set, every `/v1/*` route requires an `X-API-Key`")
+    a("When `POLYFORGE_API_KEY` is set, every `/v1/*` route requires an `X-API-Key`")
     a("header. A missing header returns `401` with `WWW-Authenticate: ApiKey`; a")
     a("wrong key returns `403`. With no key configured, auth is disabled (dev only).")
     a("")
@@ -196,9 +191,7 @@ def render(spec: dict[str, Any]) -> str:
                 a("")
             responses = op.get("responses", {})
             if responses:
-                codes = ", ".join(
-                    f"`{c}`" for c in sorted(responses) if c != "default"
-                ) or "—"
+                codes = ", ".join(f"`{c}`" for c in sorted(responses) if c != "default") or "—"
                 a(f"Responses: {codes}")
                 a("")
             body = _body_params(op, schemas)
@@ -208,10 +201,7 @@ def render(spec: dict[str, Any]) -> str:
                 a("| Field | Type | Default | Description |")
                 a("| --- | --- | --- | --- |")
                 for row in body:
-                    a(
-                        f"| `{row['name']}` | {row['type']} | {row['default']} "
-                        f"| {row['desc']} |"
-                    )
+                    a(f"| `{row['name']}` | {row['type']} | {row['default']} | {row['desc']} |")
                 a("")
             query = _query_params(op)
             if query:
@@ -220,10 +210,7 @@ def render(spec: dict[str, Any]) -> str:
                 a("| Name | Type | Default | Description |")
                 a("| --- | --- | --- | --- |")
                 for row in query:
-                    a(
-                        f"| {row['name']} | {row['type']} | {row['default']} "
-                        f"| {row['desc']} |"
-                    )
+                    a(f"| {row['name']} | {row['type']} | {row['default']} | {row['desc']} |")
                 a("")
 
     # -- notes ---------------------------------------------------------

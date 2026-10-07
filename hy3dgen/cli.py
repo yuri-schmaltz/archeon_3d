@@ -1,24 +1,27 @@
-"""Command-line client for the Archeon 3D backend.
+"""Command-line client for the PolyForge backend.
 
-The CLI talks to a running ``hy3dgen-api`` server over HTTP, so the same
+Do prompt ao polígono — from prompt to polygon.
+
+The CLI talks to a running ``polyforge-api`` server over HTTP, so the same
 ``XDG_CACHE_HOME`` is shared between the CLI and the API (the API does the
 heavy lifting; the CLI just submits jobs and downloads the result).
 
 Examples::
 
     # Submit a text-to-3D job and wait for the GLB:
-    hy3dgen-cli text "a red chair" --output chair.glb
+    polyforge-cli text "a red chair" --output chair.glb
 
     # Image-to-3D:
-    hy3dgen-cli image input.png --output model.glb --texture
+    polyforge-cli image input.png --output model.glb --texture
 
     # Multi-view from 4 images:
-    hy3dgen-cli multiview front.png back.png left.png right.png \\
+    polyforge-cli multiview front.png back.png left.png right.png \\
         --output model.glb
 
     # Re-texture an existing mesh (GLB) with an image:
-    hy3dgen-cli texture-mesh mesh.glb --image ref.png --output textured.glb
+    polyforge-cli texture-mesh mesh.glb --image ref.png --output textured.glb
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,8 +36,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
-DEFAULT_API_URL = os.environ.get("ARCHEON_API_URL", "http://127.0.0.1:8081")
-DEFAULT_API_KEY = os.environ.get("ARCHEON_API_KEY") or None
+DEFAULT_API_URL = os.environ.get("POLYFORGE_API_URL", "http://127.0.0.1:8081")
+DEFAULT_API_KEY = os.environ.get("POLYFORGE_API_KEY") or None
 DEFAULT_TIMEOUT = 30
 POLL_INTERVAL = 2.0
 POLL_TIMEOUT = 900.0  # 15 minutes
@@ -43,6 +46,7 @@ POLL_TIMEOUT = 900.0  # 15 minutes
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
+
 
 def _request(
     method: str,
@@ -76,8 +80,7 @@ def _request(
         raise SystemExit(f"HTTP {e.code} {e.reason}: {detail}") from None
     except urllib.error.URLError as e:
         raise SystemExit(
-            f"Could not reach the backend at {url}: {e.reason}. "
-            "Is `hy3dgen-api` running?"
+            f"Could not reach the backend at {url}: {e.reason}. Is `polyforge-api` running?"
         ) from None
 
 
@@ -143,7 +146,7 @@ def _wait_via_sse(
             line = raw.decode("utf-8", errors="ignore").rstrip("\r\n")
             if not line or not line.startswith("data:"):
                 continue
-            payload = line[len("data:"):].strip()
+            payload = line[len("data:") :].strip()
             if not payload or payload == "{}":
                 continue  # keep-alive ping
             try:
@@ -181,6 +184,7 @@ def _download(file_path: str, output: Path, api_url: str) -> None:
 # Subcommands
 # ---------------------------------------------------------------------------
 
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     """Unified generation: dispatch to /v1/generate with whatever inputs
     were provided. The backend infers the mode from the fields that are
@@ -203,22 +207,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     if args.views is not None:
         payload["views"] = {
             "front": _encode_image(Path(args.views[0])),
-            "back":  _encode_image(Path(args.views[1])),
-            "left":  _encode_image(Path(args.views[2])),
+            "back": _encode_image(Path(args.views[1])),
+            "left": _encode_image(Path(args.views[2])),
             "right": _encode_image(Path(args.views[3])),
         }
     if args.mesh is not None:
         payload["mesh"] = _encode_image(Path(args.mesh))
 
-    if not any([
-        payload.get("text"),
-        payload.get("image"),
-        payload.get("views"),
-        payload.get("mesh"),
-    ]):
-        raise SystemExit(
-            "generate: provide at least one of --text, --image, --views, --mesh"
-        )
+    if not any(
+        [
+            payload.get("text"),
+            payload.get("image"),
+            payload.get("views"),
+            payload.get("mesh"),
+        ]
+    ):
+        raise SystemExit("generate: provide at least one of --text, --image, --views, --mesh")
 
     job = _request("POST", f"{args.api_url}/v1/generate", data=payload, api_key=args.api_key)
     uid = job["uid"]
@@ -344,37 +348,47 @@ def _cmd_list(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-
 def _maybe_stream_wait(args: argparse.Namespace, uid: str) -> dict:
     """Pick the SSE-backed waiter when ``--stream`` is set, else poll."""
     if args.stream:
         try:
             return _wait_via_sse(
-                args.api_url, uid, api_key=args.api_key, timeout=args.timeout,
+                args.api_url,
+                uid,
+                api_key=args.api_key,
+                timeout=args.timeout,
             )
         except SystemExit as e:
             # SSE endpoint missing or server pre-SSE; fall back to polling.
             print(f"  SSE not available ({e}); falling back to polling.")
             return _wait_for_completion(
-                args.api_url, uid, api_key=args.api_key, timeout=args.timeout,
+                args.api_url,
+                uid,
+                api_key=args.api_key,
+                timeout=args.timeout,
             )
     return _wait_for_completion(
-        args.api_url, uid, api_key=args.api_key, timeout=args.timeout,
+        args.api_url,
+        uid,
+        api_key=args.api_key,
+        timeout=args.timeout,
     )
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="hy3dgen-cli",
-        description=__doc__.split("\n\n", 1)[0] if __doc__ else "Archeon 3D CLI",
+        prog="polyforge-cli",
+        description=__doc__.split("\n\n", 1)[0] if __doc__ else "PolyForge CLI",
     )
     parser.add_argument(
-        "--api-url", default=DEFAULT_API_URL,
+        "--api-url",
+        default=DEFAULT_API_URL,
         help="Backend base URL (default: %(default)s)",
     )
     parser.add_argument(
-        "--api-key", default=DEFAULT_API_KEY,
-        help="X-API-Key header value (default: ARCHEON_API_KEY env)",
+        "--api-key",
+        default=DEFAULT_API_KEY,
+        help="X-API-Key header value (default: POLYFORGE_API_KEY env)",
     )
 
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
@@ -383,44 +397,62 @@ def _build_parser() -> argparse.ArgumentParser:
     common.add_argument("--steps", type=int, default=50, help="Inference steps (default: 50)")
     common.add_argument("--guidance", type=float, default=5.0, help="Guidance scale (default: 5.0)")
     common.add_argument(
-        "--octree-resolution", type=int, default=256, help="Octree resolution (default: 256)",
+        "--octree-resolution",
+        type=int,
+        default=256,
+        help="Octree resolution (default: 256)",
     )
     common.add_argument("--seed", type=int, default=1234, help="Random seed (default: 1234)")
     common.add_argument(
-        "--format", choices=["glb", "obj", "ply", "stl"], default="glb",
+        "--format",
+        choices=["glb", "obj", "ply", "stl"],
+        default="glb",
         help="Output format (default: glb)",
     )
     common.add_argument("--texture", action="store_true", help="Generate a texture map")
     common.add_argument(
-        "-o", "--output", help="Download path for the resulting mesh (default: just print uid)",
+        "-o",
+        "--output",
+        help="Download path for the resulting mesh (default: just print uid)",
     )
     common.add_argument(
-        "--timeout", type=float, default=POLL_TIMEOUT,
+        "--timeout",
+        type=float,
+        default=POLL_TIMEOUT,
         help="Maximum seconds to wait for completion (default: %(default)s)",
     )
     common.add_argument(
-        "--stream", action="store_true",
+        "--stream",
+        action="store_true",
         help="Use Server-Sent Events to wait for completion (lower latency, fewer requests)",
     )
 
     p = sub.add_parser(
-        "generate", parents=[common],
+        "generate",
+        parents=[common],
         help="Unified generation: provide any of --text, --image, --views, --mesh. "
-             "The backend infers the mode from what you supply.",
+        "The backend infers the mode from what you supply.",
     )
     p.add_argument("--text", help="Text prompt (or guide for image_to_3d)")
     p.add_argument("--image", help="Path to a single image (image_to_3d / texture reference)")
     p.add_argument(
-        "--views", nargs=4, metavar=("FRONT", "BACK", "LEFT", "RIGHT"),
+        "--views",
+        nargs=4,
+        metavar=("FRONT", "BACK", "LEFT", "RIGHT"),
         help="Paths to 4 view images (multiview mode)",
     )
     p.add_argument(
-        "--mesh", help="Path to a GLB mesh to re-texture (texture_mesh mode)",
+        "--mesh",
+        help="Path to a GLB mesh to re-texture (texture_mesh mode)",
     )
     p.add_argument("--no-rembg", action="store_true", help="Skip background removal (image_to_3d)")
     p.set_defaults(func=_cmd_generate)
 
-    p = sub.add_parser("text", parents=[common], help="[deprecated] Generate a 3D model from a text prompt (use 'generate --text=...')")
+    p = sub.add_parser(
+        "text",
+        parents=[common],
+        help="[deprecated] Generate a 3D model from a text prompt (use 'generate --text=...')",
+    )
     p.add_argument("prompt", help="Text prompt describing the model")
     p.set_defaults(func=_cmd_text)
 
@@ -430,13 +462,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_image)
 
     p = sub.add_parser(
-        "multiview", parents=[common], help="Generate from 4 view images (front back left right)",
+        "multiview",
+        parents=[common],
+        help="Generate from 4 view images (front back left right)",
     )
     p.add_argument("views", nargs=4, help="Paths to front, back, left, right images")
     p.set_defaults(func=_cmd_multiview)
 
     p = sub.add_parser(
-        "texture-mesh", parents=[common],
+        "texture-mesh",
+        parents=[common],
         help="Re-texture an existing GLB mesh with a reference image or prompt",
     )
     p.add_argument("mesh", help="Path to the input .glb mesh")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 random.seed(42)  # deterministic
 
-SAVE_DIR = "/tmp/archeon-saves"
+SAVE_DIR = "/tmp/polyforge-saves"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 fake_glb_pool = []
@@ -142,7 +142,7 @@ for m, n in MODE_WEIGHTS:
     mode_pool.extend([m] * n)
 random.shuffle(mode_pool)
 
-db = sqlite3.connect("/tmp/archeon-demo2.db")
+db = sqlite3.connect("/tmp/polyforge-demo2.db")
 db.execute("PRAGMA journal_mode = WAL")
 db.execute("PRAGMA synchronous = OFF")
 db.row_factory = sqlite3.Row
