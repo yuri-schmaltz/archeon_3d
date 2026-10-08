@@ -64,7 +64,12 @@ ml = [
     "einops",
     "opencv-python",
     "omegaconf",
-    "diso",
+    # NOTE: ``diso`` (DMC surface extractor) is intentionally NOT in the
+    # default ML extra: it compiles CUDA extensions against the torch build,
+    # so a host CUDA toolkit mismatch (e.g. host CUDA 12 vs torch CUDA 13)
+    # breaks the whole install. The runtime falls back to "mc"
+    # automatically (see hy3dgen/inference.py), so most users don't need
+    # it. Install manually only with a matching toolkit: ``pip install diso``.
     # T5Tokenizer for the text_to_3d text-to-image stage.
     "sentencepiece",
     "tqdm",

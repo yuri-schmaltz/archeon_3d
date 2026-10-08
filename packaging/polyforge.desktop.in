@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PolyForge
+GenericName=Estúdio local de geração 3D
+GenericName[en]=Local 3D generation studio
+Comment=Do prompt ao polígono — gere malhas 3D a partir de texto ou imagens
+Comment[en]=From prompt to polygon — generate 3D meshes from text or images
+Exec=__POLYFORGE_DIR__/launcher.sh
+Path=__POLYFORGE_DIR__
+Icon=__POLYFORGE_DIR__/assets/logo/polyforge-icon-256.png
+Terminal=true
+Categories=Graphics;3DGraphics;
+Keywords=3D;mesh;generation;AI;Hunyuan;GLB;text-to-3D;image-to-3D;
+StartupNotify=true
+StartupWMClass=PolyForge

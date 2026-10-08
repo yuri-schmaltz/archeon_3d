@@ -16,6 +16,9 @@
 #      via ``POLYFORGE_PORT`` / ``POLYFORGE_HOST`` env vars). The Vite
 #      ``dist/`` is served at the same URL so the browser shows the
 #      PolyForge UI without a separate dev server.
+#   6. Installs a ``polyforge.desktop`` menu entry (Graphics category)
+#      and opens the UI in the default browser once /health answers.
+#      Opt out with ``--no-desktop`` / ``--no-browser``.
 #
 # Re-runs are cheap: subsequent invocations only reinstall if the
 # dependency manifest (pyproject.toml / requirements.txt / package.json)
@@ -42,8 +45,19 @@
 #                       which weights to download: shape, multiview, tex,
 #                       t2i or all (default: all). Only used when the
 #                       download is enabled.
+#   POLYFORGE_NO_BROWSER
+#                       don't auto-open the UI in the default browser
+#                       once the API is ready (default: unset = open).
+#   POLYFORGE_NO_DESKTOP
+#                       don't install the system menu launcher
+#                       (default: unset = install into
+#                       ~/.local/share/applications).
 #
 # Flags (alternative to env vars):
+#   --no-browser        same as POLYFORGE_NO_BROWSER=1
+#   --no-desktop        same as POLYFORGE_NO_DESKTOP=1
+#   --install-desktop   install the system menu launcher and exit
+#   --uninstall-desktop remove the system menu launcher and exit
 #   --ui                same as POLYFORGE_UI=1 (legacy Gradio launcher)
 #   --no-ml             same as POLYFORGE_NO_ML=1
 #   --no-frontend       same as POLYFORGE_NO_FRONTEND=1
@@ -98,6 +112,10 @@ while (( $# )); do
             ;;
         --model-scope=*) POLYFORGE_MODEL_SCOPE="${1#*=}" ;;
         --reinstall) POLYFORGE_FORCE_REINSTALL=1 ;;
+        --no-browser) POLYFORGE_NO_BROWSER=1 ;;
+        --no-desktop) POLYFORGE_NO_DESKTOP=1 ;;
+        --install-desktop) POLYFORGE_INSTALL_DESKTOP_ONLY=1 ;;
+        --uninstall-desktop) POLYFORGE_UNINSTALL_DESKTOP_ONLY=1 ;;
         *) die "Unknown argument: $1 (try --help)";;
     esac
     shift
@@ -119,6 +137,46 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 STAMP_FILE="$SCRIPT_DIR/.polyforge_launcher.stamp"
 PROFILE_FILE="$SCRIPT_DIR/.polyforge_launcher.profile"
+
+# --- desktop entry only (no Python/Node needed) -------------------------------
+# --install-desktop / --uninstall-desktop exit here, before any toolchain
+# detection, so they work on a fresh checkout.
+_desktop_apps_dir="$HOME/.local/share/applications"
+_desktop_file="$_desktop_apps_dir/polyforge.desktop"
+_desktop_icon="$HOME/.local/share/icons/hicolor/256x256/apps/polyforge.png"
+if [[ "${POLYFORGE_UNINSTALL_DESKTOP_ONLY:-}" == "1" ]]; then
+    rm -f "$_desktop_file" "$_desktop_icon"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$_desktop_apps_dir" >/dev/null 2>&1 || true
+    fi
+    _ts() { date '+%Y-%m-%d %H:%M:%S'; }
+    printf '[%s] Menu launcher removed.\n' "$(_ts)"
+    exit 0
+fi
+if [[ "${POLYFORGE_INSTALL_DESKTOP_ONLY:-}" == "1" ]]; then
+    _template="$SCRIPT_DIR/packaging/polyforge.desktop.in"
+    if [[ ! -f "$_template" ]]; then
+        printf 'Desktop template missing (%s).\n' "$_template" >&2
+        exit 1
+    fi
+    mkdir -p "$_desktop_apps_dir"
+    sed "s#__POLYFORGE_DIR__#$SCRIPT_DIR#g" "$_template" > "$_desktop_file"
+    chmod 644 "$_desktop_file"
+    if [[ -f "$SCRIPT_DIR/assets/logo/polyforge-icon-256.png" ]]; then
+        mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps"
+        cp -f "$SCRIPT_DIR/assets/logo/polyforge-icon-256.png" "$_desktop_icon"
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$_desktop_apps_dir" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+    _ts() { date '+%Y-%m-%d %H:%M:%S'; }
+    printf '[%s] Menu launcher installed: %s (Graphics → PolyForge).\n' "$(_ts)" "$_desktop_file"
+    exit 0
+fi
+unset _desktop_apps_dir _desktop_file _desktop_icon _template
 PYPROJECT="$SCRIPT_DIR/pyproject.toml"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
 FRONTEND_DIR="$SCRIPT_DIR/polyforge_frontend"
@@ -272,24 +330,13 @@ if [[ "${POLYFORGE_FORCE_REINSTALL:-}" == "1" ]]; then
     manifest_changed=1
 fi
 
-# pip install logic: prefer the [ml] extra when possible, fall back to
-# requirements.txt if pyproject.toml can't be parsed.
-#
-# A few packages (notably ``diso``) declare a build-time dependency on
-# ``torch`` even though they don't actually need it. Pip's build
-# isolation tries to install just the build requirements into a sandbox
-# which doesn't have torch → the build fails. Worse, ``diso`` also
-# fails to build when the system CUDA differs from the one torch was
-# compiled against. We work around both with --no-build-isolation
-# plus an opportunistic ``mc`` fallback at runtime; see
-# ``hy3dgen.inference._generate``.
-#
-# If the editable install with [ml] fails on diso, we don't give up on
-# the whole ML stack: we still install all the pure-Python ML deps
-# (diffusers, transformers, accelerate, rembg, onnxruntime, mmgp,
-# einops, omegaconf, opencv, scikit-image, xatlas) individually,
-# so the user has a working inference path with the 'mc' surface
-# extractor instead of an API-only build that can't load any
+# pip install logic: the [ml] extra is pure wheels (``diso`` was removed
+# from it — it compiles CUDA extensions against the torch build, so a
+# host CUDA toolkit mismatch breaks the whole install; the runtime
+# falls back to "mc" automatically, see ``hy3dgen.inference._generate``).
+# If the editable install still fails, we install the pure-Python ML
+# deps individually as a safety net, so the user keeps a working
+# inference path instead of an API-only build that can't load any
 # model at all.
 install_individual_ml_deps() {
     # Wheel-only, no source builds. This is the safety net for
@@ -331,20 +378,20 @@ do_backend_install() {
 
     # Step 2: editable install with the rest. --no-build-isolation so
     # the build sandbox can see torch and any other already-installed
-    # packages, sidestepping the diso problem.
+    # packages.
     if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[$extra]"; then
         return 0
     fi
 
-    warn "Editable install failed; some heavy ML packages (diso) may need a matching CUDA toolkit."
-    warn "Retrying with [ml] but skipping the diso wheel."
+    warn "Editable install failed; retrying with individual ML wheels."
     warn "This still gives you a working inference pipeline; only the"
-    warn "DMC surface extractor won't be available (the runtime falls"
-    warn "back to 'mc' automatically)."
+    warn "optional DMC surface extractor won't be available (the runtime"
+    warn "falls back to 'mc' automatically; install 'diso' manually with"
+    warn "a matching CUDA toolkit if you need it)."
 
-    # Try the ML extra minus diso. ``pip install -e .[ml,dev]`` is
-    # monolithic, so we install the rest individually and then do
-    # the editable dev extra for our own package metadata.
+    # ``pip install -e .[ml,dev]`` is monolithic, so we install the rest
+    # individually and then do the editable dev extra for our own
+    # package metadata.
     install_individual_ml_deps
     if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[dev]"; then
         return 0
@@ -402,11 +449,12 @@ ask_download_models() {
     free_space="$(df -h "$hf_dir" 2>/dev/null | awk 'NR==2 {print $4}')"
     log "Model weights download to: $hf_dir (free space: ${free_space:-unknown})"
     log "Scopes: all (~tens of GB) | shape (~12 GB) | multiview (~8 GB) | tex (full repo) | t2i (~15 GB)"
-    printf 'Download model weights now? [N/all/shape/multiview/tex/t2i] '
+    printf 'Download model weights now? [y/N/all/shape/multiview/tex/t2i] '
     read -r answer </dev/tty || answer=""
     case "${answer,,}" in
         ""|n|no|0|false) return 1 ;;
-        all|shape|multiview|tex|t2i) POLYFORGE_MODEL_SCOPE="${answer,,}" ;;
+        y|yes|all) POLYFORGE_MODEL_SCOPE="all" ;;
+        shape|multiview|tex|t2i) POLYFORGE_MODEL_SCOPE="${answer,,}" ;;
         *) warn "Unknown scope '$answer'; skipping weights download."; return 1 ;;
     esac
     return 0
@@ -470,6 +518,53 @@ fi
 # Final stamp update so we don't reinstall on every invocation.
 touch "$STAMP_FILE"
 
+# --- 6b. system menu launcher (Linux desktop entry) ---------------------------
+# Installs ~/.local/share/applications/polyforge.desktop so PolyForge shows
+# up in the app menu under Graphics / 3D. Skipped on macOS/Windows, in
+# headless sessions, or with --no-desktop / POLYFORGE_NO_DESKTOP=1.
+# The .desktop points at this repo's launcher.sh, so moving the repo
+# requires a reinstall (rerun ./launcher.sh).
+install_desktop_entry() {
+    local apps_dir desktop_file template icon_src
+    apps_dir="$HOME/.local/share/applications"
+    desktop_file="$apps_dir/polyforge.desktop"
+    template="$SCRIPT_DIR/packaging/polyforge.desktop.in"
+    icon_src="$SCRIPT_DIR/assets/logo/polyforge-icon-256.png"
+    [[ -f "$template" ]] || { warn "Desktop template missing ($template); skipping menu entry."; return 0; }
+    mkdir -p "$apps_dir"
+    sed "s#__POLYFORGE_DIR__#$SCRIPT_DIR#g" "$template" > "$desktop_file"
+    chmod 644 "$desktop_file"
+    if [[ -f "$icon_src" ]]; then
+        mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps"
+        cp -f "$icon_src" "$HOME/.local/share/icons/hicolor/256x256/apps/polyforge.png"
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+    log "Menu launcher installed: $desktop_file (Graphics → PolyForge)."
+}
+
+uninstall_desktop_entry() {
+    local desktop_file="$HOME/.local/share/applications/polyforge.desktop"
+    local icon_file="$HOME/.local/share/icons/hicolor/256x256/apps/polyforge.png"
+    rm -f "$desktop_file" "$icon_file"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+    fi
+    log "Menu launcher removed."
+}
+
+if [[ "${POLYFORGE_NO_DESKTOP:-}" != "1" && "$OSTYPE" != darwin* && "$OSTYPE" != msys* && "$OSTYPE" != cygwin* ]]; then
+    if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" || -d "$HOME/.local/share/applications" ]]; then
+        install_desktop_entry
+    else
+        log "Skipping menu launcher (headless session; use --install-desktop to force)."
+    fi
+fi
+
 # --- 7. choose what to run ---------------------------------------------------
 # Default: start the FastAPI server (which now also serves the
 # compiled frontend at /). Setting POLYFORGE_UI=1 (or --ui) starts
@@ -529,6 +624,44 @@ for _ in {1..40}; do
     fi
     sleep 0.5
 done
+
+# --- 8. open the UI in the default browser ------------------------------------
+# Only when the API answered /health above, only for loopback binds, and
+# never in headless sessions. Opt out with --no-browser /
+# POLYFORGE_NO_BROWSER=1.
+open_browser() {
+    local url="$1"
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v gio >/dev/null 2>&1; then
+        gio open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -Command "Start-Process '$url'" >/dev/null 2>&1 &
+    else
+        return 1
+    fi
+}
+
+if [[ "${POLYFORGE_NO_BROWSER:-}" != "1" ]]; then
+    case "$POLYFORGE_HOST" in
+        127.0.0.1|::1|localhost)
+            if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || [[ "$OSTYPE" == darwin* ]]; then
+                if open_browser "http://$POLYFORGE_HOST:$POLYFORGE_PORT/"; then
+                    log "Opened the PolyForge UI in your default browser."
+                else
+                    log "Open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ in your browser for the PolyForge UI."
+                fi
+            else
+                log "Headless session — open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ from a browser."
+            fi
+            ;;
+        *)
+            log "Remote bind ($POLYFORGE_HOST) — open the UI manually (browser auto-open is loopback-only)."
+            ;;
+    esac
+fi
 
 log "Press Ctrl+C to stop."
 wait "$API_PID"

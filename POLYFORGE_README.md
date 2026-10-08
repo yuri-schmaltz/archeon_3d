@@ -1,19 +1,70 @@
 # PolyForge — Do prompt ao polígono
 
-> **A FastAPI + React + SSE fork of [Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2)**
-> with persistent job state, real-time event streams, and a single unified
-> request schema.
+> **A friendly local 3D-generation studio: FastAPI + React + SSE, built on
+> [Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2).**
+> Type a prompt (or drop in an image), get a GLB mesh back — with live
+> progress, a searchable library, and jobs that survive restarts.
 >
 > All configuration uses the `POLYFORGE_*` env prefix. Pre-rebrand
 > environment variables are rejected loudly at startup — rename them
 > to `POLYFORGE_*` and restart.
 
-PolyForge turns Hunyuan3D-2 into a real **service**: queue jobs, stream
-status over Server-Sent Events, persist them across restarts, and drive
-everything from a React UI. The original 4 request types
-(`text_to_3d`, `image_to_3d`, `multiview`, `texture_mesh`) are merged
-into a single unified `GenerationRequest` — fill in any combination of
-inputs and the backend figures out the rest.
+## About
+
+PolyForge turns Hunyuan3D-2 into a real **local service**: queue jobs, stream
+status over Server-Sent Events (SSE), persist them in SQLite across restarts,
+and drive everything from a React UI or a small CLI. The original 4 request
+types (`text_to_3d`, `image_to_3d`, `multiview`, `texture_mesh`) are merged
+into a single unified `GenerationRequest` — fill in any combination of inputs
+and the backend figures out the rest.
+
+**Who is it for?** Makers, indie game devs, and 3D hobbyists who want
+text/image-to-3D on their own machine, without hosting anything remotely.
+**What do you need?** Linux (or Windows via the legacy Gradio launcher),
+Python 3.10–3.12, Node 22.12+ for the UI, and ideally an NVIDIA GPU —
+CPU mode works but is slow and meant for tests.
+
+**Upstream:** models, weights, and the core diffusion/texture research come
+from Tencent's Hunyuan3D-2 (see [License](#license) — territory and use
+restrictions apply). **This fork** adds the service layer: queue, persistence,
+SSE, React studio, CLI, and the smart local installer (`launcher.sh`).
+
+## Screenshots
+
+| Create — pick a mode and generate | Library — history, search, reuse params |
+|---|---|
+| ![Create tab](docs/polyforge/etapa-3-4-5/final-desktop-create.png) | ![Library tab](docs/polyforge/etapa-3-4-5/final-desktop-library.png) |
+
+| System — health, queue, warmup | Settings — language and shortcuts |
+|---|---|
+| ![System tab](docs/polyforge/etapa-3-4-5/final-desktop-system.png) | ![Settings tab](docs/polyforge/etapa-3-4-5/final-desktop-settings.png) |
+
+<details>
+<summary>More views (mobile + 1000-job stress test)</summary>
+
+| Mobile create | 1000-job gallery |
+|---|---|
+| ![Mobile create](docs/polyforge/etapa-3-4-5/final-mobile-create.png) | ![1000 jobs](docs/screenshot-1000.png) |
+
+</details>
+
+> All screenshots are committed in-repo under `docs/polyforge/` and `docs/`.
+> If you re-capture the UI, keep the same filenames so the docs stay in sync.
+
+## Contents
+
+- [Quickstart](#quickstart)
+- [Using the studio](#using-the-studio)
+- [Using the CLI](#c-quick-cli-run)
+- [Environment variables](#environment-variables)
+- [Model setup](#model-setup)
+- [API surface](#api-surface-summary)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Docs map](#docs-map)
+- [License](#license)
+- [About & credits](#about--credits)
 
 ## What's in the box
 
@@ -60,6 +111,13 @@ The launcher checks Python 3.10–3.12, detects an NVIDIA GPU with `nvidia-smi`,
 selects CUDA or CPU, creates a local `.venv` and `.env` when missing, installs
 the backend and frontend, then starts the API. Open
 `http://127.0.0.1:8081`. It never installs system drivers or uses `sudo`.
+
+When the API answers `/health`, the launcher opens the UI in your default
+browser automatically (loopback binds only; opt out with `--no-browser`).
+It also installs a **PolyForge** entry in the system app menu under
+**Graphics**, so you can start it without a terminal
+(`make desktop` / `./launcher.sh --install-desktop`; remove with
+`make desktop-remove`).
 
 Choose the install mode explicitly when needed:
 

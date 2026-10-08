@@ -13,7 +13,11 @@ torchvision
 #ConfigArgParse
 #ipdb
 omegaconf
-diso
+# diso is intentionally opt-in (not installed by default): it compiles CUDA
+# extensions against the torch build, so a host CUDA toolkit mismatch breaks
+# the install. The runtime falls back to "mc" automatically. Install manually
+# only with a matching toolkit: ``pip install diso``.
+#diso
 # Required by the T5 tokenizer used by the text_to_3d text-to-image stage.
 # Without it transformers exposes T5Tokenizer as a Placeholder and diffusers
 # fails to load the HunyuanDiT pipeline.

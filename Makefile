@@ -177,6 +177,14 @@ purge: clean ## Also remove the venv and all downloaded models.
 status: ## Hit the API health endpoint (requires API to be running).
 	@curl -sS http://$${POLYFORGE_HOST:-127.0.0.1}:$${POLYFORGE_PORT:-8081}/health | python3 -m json.tool || true
 
+.PHONY: desktop
+desktop: ## Install the PolyForge menu launcher (Graphics category).
+	@./launcher.sh --install-desktop
+
+.PHONY: desktop-remove
+desktop-remove: ## Remove the PolyForge menu launcher.
+	@./launcher.sh --uninstall-desktop
+
 .PHONY: openapi
 openapi: ## Regenerate docs/API_DOCUMENTATION.md + openapi.json from the schema (no server needed).
 	@$(VENV)/bin/python scripts/gen_api_docs.py

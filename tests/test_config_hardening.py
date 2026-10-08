@@ -439,6 +439,54 @@ class TestLocalInstallerDefaults:
         ci = (root / ".github" / "workflows" / "ci.yml").read_text()
         assert "docker/setup-buildx-action" not in ci
 
+    def test_launcher_opens_browser_when_api_is_ready(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        launcher = (root / "launcher.sh").read_text()
+
+        assert "open_browser" in launcher
+        assert "xdg-open" in launcher
+        assert "--no-browser" in launcher
+        assert "POLYFORGE_NO_BROWSER" in launcher
+        # Loopback-only: never auto-open for remote binds.
+        assert "loopback-only" in launcher
+
+    def test_launcher_installs_desktop_menu_entry(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        launcher = (root / "launcher.sh").read_text()
+        template = (root / "packaging" / "polyforge.desktop.in").read_text()
+
+        assert "install_desktop_entry" in launcher
+        assert "--install-desktop" in launcher
+        assert "--uninstall-desktop" in launcher
+        assert "POLYFORGE_NO_DESKTOP" in launcher
+        assert "Categories=Graphics;3DGraphics;" in template
+        assert (root / "assets" / "logo" / "polyforge-icon.svg").exists()
+        assert (root / "assets" / "logo" / "polyforge-icon-256.png").exists()
+
+    def test_download_prompt_accepts_yes(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        launcher = (root / "launcher.sh").read_text()
+
+        assert "[y/N/all/shape/multiview/tex/t2i]" in launcher
+        assert "y|yes|all" in launcher
+
+    def test_diso_is_opt_in_not_default(self):
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        with (root / "pyproject.toml").open("rb") as handle:
+            ml = tomllib.load(handle)["project"]["optional-dependencies"]["ml"]
+        assert "diso" not in ml
+        reqs = (root / "requirements.txt").read_text()
+        assert "\ndiso\n" not in f"\n{reqs}\n"
+
 
 class TestCliDefaultUrl:
     def test_cli_defaults_to_the_server_port(self):
