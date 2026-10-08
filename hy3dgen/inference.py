@@ -18,16 +18,27 @@ VIEW_KEYS = ("front", "back", "left", "right")
 # Canonical text-to-image checkpoint. The API layer reports this ID in
 # capabilities/status responses, so keep it in one place.
 DEFAULT_T2I_MODEL = "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_MESH_BYTES = 30 * 1024 * 1024
+MAX_IMAGE_PIXELS = 25_000_000
 
 
-def decode_base64(value: str) -> bytes:
-    return base64.b64decode(value.split(",", 1)[-1], validate=True)
+def decode_base64(value: str, *, max_bytes: int | None = None) -> bytes:
+    encoded = value.split(",", 1)[-1]
+    if max_bytes is not None and len(encoded) > ((max_bytes + 2) // 3) * 4:
+        raise ValueError(f"Base64 payload exceeds the maximum size of {max_bytes} bytes.")
+    decoded = base64.b64decode(encoded, validate=True)
+    if max_bytes is not None and len(decoded) > max_bytes:
+        raise ValueError(f"Decoded payload exceeds the maximum size of {max_bytes} bytes.")
+    return decoded
 
 
 def load_image_from_base64(image_b64: str) -> Image.Image:
     from PIL import Image
 
-    with Image.open(BytesIO(decode_base64(image_b64))) as image:
+    with Image.open(BytesIO(decode_base64(image_b64, max_bytes=MAX_IMAGE_BYTES))) as image:
+        if image.width * image.height > MAX_IMAGE_PIXELS:
+            raise ValueError(f"Image dimensions exceed the {MAX_IMAGE_PIXELS}-pixel limit.")
         return image.convert("RGBA")
 
 
@@ -168,7 +179,7 @@ class ModelWorker:
             import trimesh
 
             mesh = trimesh.load(
-                BytesIO(decode_base64(params["mesh"])),
+                BytesIO(decode_base64(params["mesh"], max_bytes=MAX_MESH_BYTES)),
                 file_type="glb",
                 force="mesh",
             )

@@ -41,6 +41,13 @@ def _make_job(uid, status=JobStatus.QUEUED, age_seconds=0):
 
 
 class TestUpsertAndGet:
+    async def test_database_file_has_private_permissions(self, tmp_path):
+        import stat
+
+        store = JobStore(str(tmp_path / "private.db"))
+        mode = stat.S_IMODE(os.stat(store._db_path).st_mode)
+        assert mode & 0o077 == 0
+
     async def test_insert_then_get(self, store):
         job = _make_job("abc", JobStatus.QUEUED)
         await store.upsert(job)

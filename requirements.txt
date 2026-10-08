@@ -22,6 +22,7 @@ tqdm
 
 # Mesh Processing
 trimesh>=4
+networkx>=3
 fast-simplification
 pymeshlab
 pygltflib

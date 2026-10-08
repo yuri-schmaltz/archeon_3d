@@ -125,7 +125,14 @@ async def submit_job(
     manager: ManagerDep,
 ) -> JobResponse:
     """Submit a generation job. Returns 202 with the initial status."""
-    uid = await manager.submit_job(request, SAVE_DIR)
+    try:
+        uid = await manager.submit_job(request, SAVE_DIR)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Inference queue is full; retry later.",
+            headers={"Retry-After": "5"},
+        ) from exc
     return manager.get_job(uid)  # type: ignore[return-value]
 
 
@@ -148,7 +155,14 @@ async def submit_unified_job(
     manager: ManagerDep,
 ) -> JobResponse:
     """Submit a generation job using the unified request schema."""
-    uid = await manager.submit_unified(request, SAVE_DIR)
+    try:
+        uid = await manager.submit_unified(request, SAVE_DIR)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Inference queue is full; retry later.",
+            headers={"Retry-After": "5"},
+        ) from exc
     return manager.get_job(uid)  # type: ignore[return-value]
 
 
@@ -210,12 +224,12 @@ async def start_model_load(manager: ManagerDep) -> ModelLoadResponse:
         return ModelLoadResponse(
             status="already_loaded",
             model=service.model_path if service is not None else manager.model_path,
-            started_at=utc_now(),
+            started_at=(service.warmup_started_at if service is not None else None) or utc_now(),
         )
     return ModelLoadResponse(
         status=status,
         model=service.model_path if service is not None else manager.model_path,
-        started_at=utc_now(),
+        started_at=(service.warmup_started_at if service is not None else None) or utc_now(),
     )
 
 
@@ -255,13 +269,15 @@ async def get_model_status(manager: ManagerDep) -> ModelStatusResponse:
         last_error = service.last_error
     return ModelStatusResponse(
         loaded=pipeline is not None,
-        loading=False,  # reserved for future streaming progress
+        loading=service.warmup_loading if service is not None else False,
         model=model_path,
         subfolder=subfolder,
         device=device,
         text_to_image_loaded=t2i_pipeline is not None,
         text_to_image_model=t2i_model,
         last_error=last_error,
+        started_at=service.warmup_started_at if service is not None else None,
+        finished_at=service.warmup_finished_at if service is not None else None,
     )
 
 
@@ -409,6 +425,7 @@ async def stream_jobs_events(
                         queue.get(),
                         timeout=15.0,
                     )
+                    queue.task_done()
                 except asyncio.TimeoutError:
                     # Keep-alive ping so proxies don't time out the connection.
                     yield {"event": "ping", "data": "{}"}
@@ -464,6 +481,7 @@ async def stream_job_events(
                     break
                 try:
                     job: JobResponse = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    queue.task_done()
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": "{}"}
                     continue
@@ -497,10 +515,8 @@ async def get_job_status(uid: str, manager: ManagerDep) -> JobResponse:
 @router.delete("/jobs/{uid}")
 async def cancel_job(uid: str, manager: ManagerDep) -> dict:
     """Request job cancellation. Idempotent — unknown uids return ok."""
-    job = manager.get_job(uid)
-    if job is not None and job.status.value == "processing":
+    if not await manager.cancel_job(uid):
         raise HTTPException(status_code=409, detail="A job already processing cannot be cancelled.")
-    await manager.cancel_job(uid)
     return {"status": "cancellation_requested", "uid": uid}
 
 
@@ -580,13 +596,14 @@ async def admin_stats(manager: ManagerDep) -> dict:
         counts_by_status[key] = counts_by_status.get(key, 0) + 1
     jobs_in_store = (await manager.store.count()) if manager.store is not None else 0
     return {
-        "queue_depth": manager.queue.qsize(),
+        "queue_depth": manager.queue_depth,
         "jobs_in_memory": jobs_in_memory,
         "jobs_in_store": jobs_in_store,
         "by_status": counts_by_status,
         "persistence_enabled": manager.store is not None,
-        "model_loaded": manager.worker is not None,
+        "model_loaded": manager.model_loaded,
         "max_history": manager.max_history,
+        "max_queue_size": manager.max_queue_size,
     }
 
 

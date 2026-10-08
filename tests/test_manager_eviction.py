@@ -161,3 +161,60 @@ class TestEvictToSize:
         _add_terminal_job(mgr, "j1", COMPLETED, age_seconds=1)
         assert await mgr.evict_to_size() == 0
         assert len(mgr.jobs) == 1
+
+    async def test_size_eviction_removes_artifact(self, tmp_path, monkeypatch):
+        from hy3dgen.api import config
+
+        monkeypatch.setattr(config, "SAVE_DIR", str(tmp_path))
+        artifact = tmp_path / "old.glb"
+        artifact.write_bytes(b"old mesh")
+        manager = PriorityRequestManager(device="cpu", max_history=1)
+        old = JobResponse(
+            uid="old",
+            status=COMPLETED,
+            created_at="1990-01-01T00:00:00+00:00",
+            file_path=str(artifact),
+        )
+        manager.jobs[old.uid] = old
+        manager.jobs["new"] = JobResponse(
+            uid="new",
+            status=COMPLETED,
+            created_at="2026-10-08T00:00:00+00:00",
+        )
+
+        assert await manager.evict_to_size() == 1
+        assert not artifact.exists()
+        assert "old" not in manager.jobs
+
+
+class TestAggressiveCleanup:
+    async def test_cleanup_removes_expired_artifact_before_pruning_record(
+        self, tmp_path, monkeypatch
+    ):
+        from hy3dgen.api import config
+        from hy3dgen.api.persistence import JobStore
+
+        monkeypatch.setattr(config, "SAVE_DIR", str(tmp_path))
+        artifact = tmp_path / "expired.glb"
+        artifact.write_bytes(b"old mesh")
+        store = JobStore(str(tmp_path / "jobs.db"))
+        manager = PriorityRequestManager(
+            device="cpu",
+            store=store,
+            max_age_seconds=1,
+        )
+        job = JobResponse(
+            uid="expired",
+            status=COMPLETED,
+            created_at="1990-01-01T00:00:00+00:00",
+            completed_at="1990-01-01T00:00:01+00:00",
+            file_path=str(artifact),
+        )
+        manager.jobs[job.uid] = job
+        await manager._persist(job)
+
+        await manager._aggressive_cleanup()
+
+        assert not artifact.exists()
+        assert job.uid not in manager.jobs
+        assert await store.get(job.uid) is None

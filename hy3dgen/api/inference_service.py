@@ -140,6 +140,7 @@ class InferenceService:
         device: str = "cuda",
         *,
         save_dir: str | None = None,
+        max_queue_size: int = 4,
         model_path: str = "tencent/Hunyuan3D-2mini",
         model_subfolder: str = "hunyuan3d-dit-v2-mini-turbo",
         multiview_model: str = "tencent/Hunyuan3D-2mv",
@@ -153,14 +154,21 @@ class InferenceService:
         self.multiview_model = multiview_model
         self.multiview_subfolder = multiview_subfolder
         self.t2i_model = t2i_model
+        self.max_queue_size = max_queue_size
 
-        self._queue: asyncio.Queue[InferenceJob | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[InferenceJob | None] = asyncio.Queue(maxsize=max_queue_size)
         self._worker: Any = None  # ModelWorker, lazily imported
         self._worker_task: asyncio.Task | None = None
+        self._warmup_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
         self._jobs: dict[str, InferenceJob] = {}
+        self._active_uid: str | None = None
         self._subscribers: list[asyncio.Queue[InferenceEvent]] = []
         self._lock = asyncio.Lock()
+        self._model_lock = asyncio.Lock()
+        self._warmup_state = "not_loaded"
+        self._warmup_started_at: str | None = None
+        self._warmup_finished_at: str | None = None
         self.last_error: str | None = None
 
     # ------------------------------------------------------------------
@@ -174,15 +182,34 @@ class InferenceService:
             logger.info("InferenceService worker started.")
 
     async def stop(self) -> None:
-        """Cancel any in-flight job and stop the worker task."""
+        """Cancel in-flight work, mark pending jobs and stop the worker task."""
         self._shutdown.set()
-        # Sentinel to unblock the queue.get() inside _run().
-        await self._queue.put(None)
+        if self._warmup_task is not None and not self._warmup_task.done():
+            self._warmup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._warmup_task
+        self._warmup_task = None
         if self._worker_task is not None:
             self._worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
             self._worker_task = None
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if job is not None:
+                self._jobs.pop(job.uid, None)
+                self._publish(
+                    InferenceEvent(
+                        uid=job.uid,
+                        stage=JobStage.CANCELLED,
+                        error="Service shutting down",
+                        request_type=job.request_type,
+                    )
+                )
+            self._queue.task_done()
         logger.info("InferenceService worker stopped.")
 
     # ------------------------------------------------------------------
@@ -196,6 +223,9 @@ class InferenceService:
         uid = params.get("uid") or uuid.uuid4().hex
         params = dict(params)
         params["uid"] = uid
+        existing = self._jobs.get(uid)
+        if existing is not None:
+            return existing
         request_type = params.get("type", "unknown")
         target_dir = save_dir or self.save_dir
         if target_dir is None:
@@ -206,8 +236,8 @@ class InferenceService:
             save_dir=target_dir,
             request_type=request_type,
         )
+        self._queue.put_nowait(job)
         self._jobs[uid] = job
-        await self._queue.put(job)
         self._publish(
             InferenceEvent(
                 uid=uid,
@@ -216,6 +246,11 @@ class InferenceService:
             )
         )
         return job
+
+    @property
+    def queue_size(self) -> int:
+        """Number of pending jobs, excluding the active job."""
+        return self._queue.qsize()
 
     async def cancel(self, uid: str) -> bool:
         """Best-effort cancel. Returns True if the job was queued and
@@ -227,7 +262,7 @@ class InferenceService:
         """
         async with self._lock:
             job = self._jobs.get(uid)
-            if job is None:
+            if job is None or self._active_uid == uid:
                 return False
             self._publish(
                 InferenceEvent(
@@ -252,35 +287,72 @@ class InferenceService:
         happens inside ``worker.warmup()``, which we run in a thread
         so the event loop stays responsive.
         """
-        from hy3dgen.inference import ModelWorker
-
         if self._worker is not None and getattr(self._worker, "pipeline", None) is not None:
+            self._warmup_state = "loaded"
             return "already_loaded"
+        if self._warmup_task is not None and not self._warmup_task.done():
+            return "loading"
+        from hy3dgen.api.timeutils import utc_now
+
+        self._warmup_state = "loading"
+        self._warmup_started_at = utc_now()
+        self._warmup_finished_at = None
+        self._warmup_task = asyncio.create_task(self._load_model_for_warmup())
+        return "loading"
+
+    async def _load_model_for_warmup(self) -> None:
+        from hy3dgen.inference import ModelWorker
+        from hy3dgen.api.timeutils import utc_now
+
         try:
-            if self._worker is None:
-                self._worker = await asyncio.to_thread(
-                    ModelWorker,
-                    device=self.device,
-                    model_path=self.model_path,
-                    subfolder=self.model_subfolder,
-                    multiview_model_path=self.multiview_model,
-                    multiview_subfolder=self.multiview_subfolder,
-                    t2i_model_path=self.t2i_model,
-                    enable_tex=True,
-                    enable_t2i=True,
-                )
-            # Force the actual weight download + load so /models/status
-            # flips to ``loaded=true`` once done.
-            await asyncio.to_thread(self._worker.warmup)
+            async with self._model_lock:
+                if self._worker is None:
+                    self._worker = await asyncio.to_thread(
+                        ModelWorker,
+                        device=self.device,
+                        model_path=self.model_path,
+                        subfolder=self.model_subfolder,
+                        multiview_model_path=self.multiview_model,
+                        multiview_subfolder=self.multiview_subfolder,
+                        t2i_model_path=self.t2i_model,
+                        enable_tex=True,
+                        enable_t2i=True,
+                    )
+                await asyncio.to_thread(self._worker.warmup)
+            self._warmup_state = "loaded"
+            self.last_error = None
         except Exception as exc:
             self.last_error = f"warmup failed: {exc}"
+            self._warmup_state = "failed"
             logger.exception("InferenceService warmup failed")
-            return "failed"
-        return "loading"
+        finally:
+            self._warmup_finished_at = utc_now()
+
+    @property
+    def warmup_state(self) -> str:
+        if self._worker is not None and getattr(self._worker, "pipeline", None) is not None:
+            return "loaded"
+        return self._warmup_state
+
+    @property
+    def warmup_loading(self) -> bool:
+        return self.warmup_state == "loading"
+
+    @property
+    def warmup_started_at(self) -> str | None:
+        return self._warmup_started_at
+
+    @property
+    def warmup_finished_at(self) -> str | None:
+        return self._warmup_finished_at
+
+    @property
+    def model_loaded(self) -> bool:
+        return self._worker is not None and getattr(self._worker, "pipeline", None) is not None
 
     def subscribe(self) -> asyncio.Queue[InferenceEvent]:
         """Register a listener. The returned queue receives every event."""
-        q: asyncio.Queue[InferenceEvent] = asyncio.Queue()
+        q: asyncio.Queue[InferenceEvent] = asyncio.Queue(maxsize=1)
         self._subscribers.append(q)
         return q
 
@@ -336,9 +408,13 @@ class InferenceService:
     def _publish(self, event: InferenceEvent) -> None:
         """Fan out an event to all subscribers."""
         for q in list(self._subscribers):
+            while q.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
+                    q.task_done()
             try:
                 q.put_nowait(event)
-            except asyncio.QueueFull:  # pragma: no cover - we don't bound the queue
+            except asyncio.QueueFull:  # pragma: no cover - access is event-loop local
                 continue
 
     async def _run(self) -> None:
@@ -346,10 +422,24 @@ class InferenceService:
         while not self._shutdown.is_set():
             job = await self._queue.get()
             if job is None:
+                self._queue.task_done()
                 break
+            async with self._lock:
+                if self._jobs.get(job.uid) is not job:
+                    self._queue.task_done()
+                    continue
+                self._active_uid = job.uid
             try:
                 await self._execute(job)
             except asyncio.CancelledError:
+                self._publish(
+                    InferenceEvent(
+                        uid=job.uid,
+                        stage=JobStage.CANCELLED,
+                        error="Service shutting down",
+                        request_type=job.request_type,
+                    )
+                )
                 raise
             except Exception as exc:
                 logger.exception("InferenceService worker error on uid=%s", job.uid)
@@ -363,10 +453,18 @@ class InferenceService:
                     )
                 )
             finally:
-                self._jobs.pop(job.uid, None)
+                async with self._lock:
+                    if self._jobs.get(job.uid) is job:
+                        self._jobs.pop(job.uid, None)
+                    if self._active_uid == job.uid:
+                        self._active_uid = None
                 self._queue.task_done()
 
     async def _execute(self, job: InferenceJob) -> None:
+        async with self._model_lock:
+            await self._execute_locked(job)
+
+    async def _execute_locked(self, job: InferenceJob) -> None:
         """Run a single job, publishing stage events along the way."""
         # Lazy import keeps ``hy3dgen[api]`` installable without ML deps.
         from hy3dgen.inference import ModelWorker

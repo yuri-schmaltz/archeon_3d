@@ -65,6 +65,21 @@ class TestSubscribeList:
         m.unsubscribe_list(q1)
         m.unsubscribe_list(q2)
 
+    async def test_slow_list_subscriber_receives_latest_snapshot_only(self):
+        m = _new_manager()
+        q = m.subscribe_list()
+        q.get_nowait()
+        _seed_job(m, "x", JobStatus.QUEUED)
+        m._notify_list()
+        m.jobs["x"].status = JobStatus.PROCESSING
+        m._notify_list()
+        m.jobs["x"].status = JobStatus.COMPLETED
+        m._notify_list()
+
+        assert q.qsize() == 1
+        assert q.get_nowait()[0].status == JobStatus.COMPLETED
+        m.unsubscribe_list(q)
+
     async def test_notify_via_job_transition_reaches_list_subscribers(self):
         m = _new_manager()
         q = m.subscribe_list()

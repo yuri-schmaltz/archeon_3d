@@ -180,6 +180,7 @@ class Settings(BaseSettings):
     )
     max_history: int = Field(default=1000, ge=0, description="In-memory job cap")
     max_age_seconds: int = Field(default=86_400, ge=0, description="Job eviction age")
+    max_queue_size: int = Field(default=4, ge=1, description="Maximum pending inference jobs")
 
     # -- Logging --------------------------------------------------------
     log_level: str = Field(default="INFO", description="DEBUG/INFO/WARNING/ERROR")
@@ -356,6 +357,7 @@ except Exception:
             job_db=None,
             max_history=1000,
             max_age_seconds=86_400,
+            max_queue_size=4,
             log_level="INFO",
             log_file=None,
             log_json=False,

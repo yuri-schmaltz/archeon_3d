@@ -66,10 +66,19 @@ class JobStore:
 
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or _DEFAULT_DB_PATH
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Open one connection for schema setup; subsequent calls open
         # their own short-lived connections.
         self._init_schema_sync()
+        self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """Keep persisted prompts and upload payloads private to this user."""
+        for path in (self._db_path, f"{self._db_path}-wal", f"{self._db_path}-shm"):
+            try:
+                os.chmod(path, 0o600)
+            except FileNotFoundError:
+                continue
 
     def _init_schema_sync(self) -> None:
         """Run CREATE TABLE / CREATE INDEX synchronously at startup.
@@ -161,6 +170,7 @@ class JobStore:
                 ),
             )
             await conn.commit()
+        self._restrict_permissions()
 
     async def get(self, uid: str) -> JobResponse | None:
         async with self._connect() as conn:

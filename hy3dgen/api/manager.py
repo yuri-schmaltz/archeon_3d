@@ -57,6 +57,7 @@ class PriorityRequestManager:
         device="cuda",
         max_concurrent=1,
         max_history: int = 1000,
+        max_queue_size: int = 4,
         store: JobStore | None = None,
         max_age_seconds: int = 86_400,
         model_path: str = "tencent/Hunyuan3D-2mini",
@@ -66,7 +67,7 @@ class PriorityRequestManager:
         t2i_model: str | None = None,
         inference_service: "InferenceService | None" = None,
     ):
-        self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=max_queue_size)
         self.jobs: dict[str, JobResponse] = {}
         # Set once the initial rehydrate pass has finished. ``/health``
         # is a liveness probe and does not wait on it; ``/ready`` does.
@@ -81,11 +82,13 @@ class PriorityRequestManager:
         self.max_age_seconds = max_age_seconds
         self._shutdown_event = asyncio.Event()
         self._worker_task: asyncio.Task | None = None
+        self._retention_task: asyncio.Task | None = None
 
         # Cap the in-memory job history so a long-running server doesn't grow
         # unbounded. Old completed/failed/cancelled jobs are evicted when the
         # dictionary exceeds ``max_history`` entries. 0 disables the cap.
         self.max_history = max_history
+        self.max_queue_size = max_queue_size
         self._evicted_total = 0
 
         # Most recent worker error (string) so /health can surface it.
@@ -178,7 +181,30 @@ class PriorityRequestManager:
             job.updated_at = utc_now()
             job.request_type = request.type
             await self._persist(job)
-            self.queue.put_nowait((100, time.time(), job.uid, request, SAVE_DIR))
+            if self.inference_service is not None:
+                params = request.model_dump(mode="json", exclude_none=True)
+                params["uid"] = job.uid
+                try:
+                    await self.inference_service.submit(params, save_dir=SAVE_DIR)
+                except asyncio.QueueFull:
+                    job.status = JobStatus.FAILED
+                    job.error = "Queue capacity reached during recovery; please resubmit this job."
+                    job.completed_at = utc_now()
+                    job.updated_at = job.completed_at
+                    await self._persist(job)
+                    self._notify(job)
+                    continue
+            else:
+                try:
+                    self.queue.put_nowait((100, time.time(), job.uid, request, SAVE_DIR))
+                except asyncio.QueueFull:
+                    job.status = JobStatus.FAILED
+                    job.error = "Queue capacity reached during recovery; please resubmit this job."
+                    job.completed_at = utc_now()
+                    job.updated_at = job.completed_at
+                    await self._persist(job)
+                    self._notify(job)
+                    continue
             replayed += 1
             logger.info(f"Re-queued active job {job.uid} after restart.")
         logger.info(
@@ -223,6 +249,10 @@ class PriorityRequestManager:
             else:
                 self._worker_task = asyncio.create_task(self._process_queue())
                 logger.info("PriorityRequestManager worker started.")
+            if self._retention_task is None:
+                self._retention_task = asyncio.create_task(
+                    self._retention_loop(), name="api-retention"
+                )
 
     async def _rehydrate_then_signal(self) -> None:
         """Run ``rehydrate()`` and always release readiness afterwards.
@@ -249,6 +279,20 @@ class PriorityRequestManager:
             return True
         return self._ready_event.is_set()
 
+    @property
+    def queue_depth(self) -> int:
+        """Number of pending jobs in the active queue implementation."""
+        if self.inference_service is not None:
+            return self.inference_service.queue_size
+        return self.queue.qsize()
+
+    @property
+    def model_loaded(self) -> bool:
+        """Whether the active worker has loaded its shape pipeline."""
+        if self.inference_service is not None:
+            return self.inference_service.model_loaded
+        return self.worker is not None and getattr(self.worker, "pipeline", None) is not None
+
     async def wait_ready(self, timeout: float | None = None) -> bool:
         """Await readiness. Returns True if ready, False on timeout."""
         try:
@@ -260,6 +304,11 @@ class PriorityRequestManager:
     async def stop(self):
         """Stop the worker loop gracefully."""
         self._shutdown_event.set()
+        if self._retention_task is not None:
+            self._retention_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._retention_task
+            self._retention_task = None
         if self._rehydrate_task is not None:
             self._rehydrate_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -287,11 +336,14 @@ class PriorityRequestManager:
         while not self._shutdown_event.is_set():
             try:
                 event = await asyncio.wait_for(self._service_listener.get(), timeout=0.5)
+                self._service_listener.task_done()
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
             self._apply_service_event(event)
+            if event.stage in (ServiceStage.COMPLETED, ServiceStage.FAILED, ServiceStage.CANCELLED):
+                await self._aggressive_cleanup()
             # Touch the namespace to satisfy linters in case it's not used.
             _ = ServiceStage
 
@@ -314,12 +366,16 @@ class PriorityRequestManager:
             job.status = JobStatus.QUEUED
             job.request_type = event.request_type
         elif stage == ServiceStage.LOADING_MODEL:
+            job.status = JobStatus.PROCESSING
             job.stage = "loading_model"
         elif stage == ServiceStage.SHAPE_GENERATION:
+            job.status = JobStatus.PROCESSING
             job.stage = "shape_generation"
         elif stage == ServiceStage.TEXTURE:
+            job.status = JobStatus.PROCESSING
             job.stage = "texture"
         elif stage == ServiceStage.EXPORTING:
+            job.status = JobStatus.PROCESSING
             job.stage = "exporting"
         elif stage == ServiceStage.COMPLETED:
             job.status = JobStatus.COMPLETED
@@ -331,6 +387,7 @@ class PriorityRequestManager:
             job.completed_at = utc_now()
         elif stage == ServiceStage.CANCELLED:
             job.status = JobStatus.CANCELLED
+            job.error = event.error or "Cancelled by user"
             job.completed_at = utc_now()
         if event.progress is not None:
             job.stage_progress = max(0.0, min(1.0, float(event.progress)))
@@ -396,7 +453,11 @@ class PriorityRequestManager:
         if self.inference_service is not None:
             params = (request.model_dump() if request else {}) or {}
             params.setdefault("uid", uid)
-            await self.inference_service.submit(params, save_dir=save_dir)
+            try:
+                await self.inference_service.submit(params, save_dir=save_dir)
+            except asyncio.QueueFull:
+                self.jobs.pop(uid, None)
+                raise
             logger.info(f"Job {uid} delegated to InferenceService")
             await self._persist(job, payload=_payload or params)
             self._notify(job)
@@ -404,7 +465,11 @@ class PriorityRequestManager:
 
         # Queue item: (priority, timestamp, uid, request, save_dir)
         # timestamp acts as secondary sort key for FIFO within same priority
-        await self.queue.put((priority, time.time(), uid, request, save_dir))
+        try:
+            self.queue.put_nowait((priority, time.time(), uid, request, save_dir))
+        except asyncio.QueueFull:
+            self.jobs.pop(uid, None)
+            raise
         logger.info(f"Job {uid} queued with priority {priority}")
         # Persist the initial state and notify any early subscribers.
         await self._persist(job, payload=_payload or (request.model_dump() if request else None))
@@ -566,7 +631,12 @@ class PriorityRequestManager:
         """
         # Imported here so the manager stays importable when tests stub
         # ``hy3dgen.inference`` for isolation.
-        from hy3dgen.inference import model_capability_snapshot, worker_model_state
+        from hy3dgen.inference import (
+            MAX_IMAGE_BYTES,
+            MAX_MESH_BYTES,
+            model_capability_snapshot,
+            worker_model_state,
+        )
 
         if self.inference_service is not None:
             snap = self.inference_service.capabilities()
@@ -590,9 +660,9 @@ class PriorityRequestManager:
                 "detailed": {"steps": 100, "guidance": 7.5, "octree_resolution": 384},
             }
         snap["limits"] = {
-            "image_bytes": 10 * 1024 * 1024,
-            "mesh_bytes": 30 * 1024 * 1024,
-            "queue_depth": self.max_history or 64,
+            "image_bytes": MAX_IMAGE_BYTES,
+            "mesh_bytes": MAX_MESH_BYTES,
+            "queue_depth": self.max_queue_size,
             "body_bytes": self._body_byte_limit(),
         }
         snap["version"] = __version__
@@ -656,6 +726,7 @@ class PriorityRequestManager:
         sortable.sort(key=lambda pair: pair[1])  # oldest first
         to_remove = len(self.jobs) - self.max_history
         for uid, _ in sortable[:to_remove]:
+            await self._delete_job_artifact(self.jobs[uid])
             del self.jobs[uid]
             self._evicted_total += 1
             if self.store is not None:
@@ -675,32 +746,75 @@ class PriorityRequestManager:
         intentionally separate so a SQLite reset doesn't accidentally destroy
         artifacts the user might still want to download.
         """
-        import os
         import pathlib
 
-        if self.store is None:
+        if max_age_seconds <= 0:
             return 0
-        base = pathlib.Path(save_dir) if save_dir else None
-        victims: list[JobResponse] = await self.store.list_older_than(max_age_seconds)
+        if save_dir is None:
+            from hy3dgen.api.config import SAVE_DIR
+
+            base = pathlib.Path(SAVE_DIR)
+        else:
+            base = pathlib.Path(save_dir)
+        if self.store is not None:
+            victims: list[JobResponse] = await self.store.list_older_than(max_age_seconds)
+        else:
+            cutoff = time.time() - max_age_seconds
+            terminal_statuses = {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            }
+            victims = []
+            for job in self.jobs.values():
+                if job.status not in terminal_statuses or not job.created_at:
+                    continue
+                try:
+                    expired = timestamp(job.created_at) < cutoff
+                except ValueError:
+                    continue
+                if expired:
+                    victims.append(job)
         removed = 0
         for job in victims:
-            if not job.file_path:
-                continue
-            path = pathlib.Path(job.file_path)
-            # If the path is absolute, use it; else resolve relative to save_dir.
-            if not path.is_absolute() and base is not None:
-                path = base / path.name
-            try:
-                if path.exists():
-                    os.remove(path)
-                    removed += 1
-            except OSError as exc:
-                logger.warning(f"Failed to remove {path}: {exc}")
+            if await self._delete_job_artifact(job, save_dir=str(base)):
+                removed += 1
         if removed:
             logger.info(f"Removed {removed} mesh file(s) older than {max_age_seconds}s.")
         return removed
 
-    async def cancel_job(self, uid: str) -> None:
+    async def _delete_job_artifact(
+        self, job: JobResponse, *, save_dir: str | None = None
+    ) -> bool:
+        """Delete a job artifact only when its resolved path stays in SAVE_DIR."""
+        import pathlib
+
+        if not job.file_path:
+            return False
+        if save_dir is None:
+            from hy3dgen.api.config import SAVE_DIR
+
+            base = pathlib.Path(SAVE_DIR).resolve()
+        else:
+            base = pathlib.Path(save_dir).resolve()
+        path = pathlib.Path(job.file_path)
+        if not path.is_absolute():
+            path = base / path.name
+        path = path.resolve()
+        try:
+            path.relative_to(base)
+        except ValueError:
+            logger.warning("Refusing to remove artifact outside SAVE_DIR: %s", path)
+            return False
+        try:
+            if path.is_file():
+                path.unlink()
+                return True
+        except OSError as exc:
+            logger.warning("Failed to remove artifact %s: %s", path, exc)
+        return False
+
+    async def cancel_job(self, uid: str) -> bool:
         # We can only cancel jobs that are still in the queue.
         # Anything already processing is mid-inference and can't be
         # safely interrupted from here (ModelWorker is a blocking call
@@ -708,28 +822,32 @@ class PriorityRequestManager:
         # their cancel request was a no-op rather than silently failing.
         job = self.jobs.get(uid)
         if job is None:
-            return
+            return True
         if job.status == JobStatus.PROCESSING:
             logger.warning(
                 f"cancel_job({uid}): job is already processing; cannot interrupt "
                 f"in-flight inference. Wait for completion or failure."
             )
-            return
+            return False
         if job.status != JobStatus.QUEUED:
-            return
+            return True
+        if self.inference_service is not None:
+            if not await self.inference_service.cancel(uid):
+                return False
         # Atomic check-and-set: only flip the status if it's still QUEUED.
         # Without this guard, a racing _process_queue could have already
         # moved the job to PROCESSING between our get() and the status
         # write, leaving us with a CANCELLED job that still ran.
         if not _status_transition(job, JobStatus.QUEUED, JobStatus.CANCELLED):
             logger.debug(f"cancel_job({uid}): status changed under us, skipping")
-            return
+            return False
         job.error = "Cancelled by user"
         job.completed_at = utc_now()
         job.updated_at = job.completed_at
         logger.info(f"Job {uid} cancelled")
         await self._persist(job)
         self._notify(job)
+        return True
 
     async def _process_queue(self):
         while not self._shutdown_event.is_set():
@@ -904,6 +1022,20 @@ class PriorityRequestManager:
         if drained:
             logger.info(f"Drained {drained} queued job(s) on shutdown")
 
+    async def _retention_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            try:
+                await self.wait_ready()
+                await self._aggressive_cleanup()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Periodic retention cleanup failed.")
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                continue
+
     async def _aggressive_cleanup(self):
         """Perform aggressive garbage collection and bounded history cleanup."""
         gc.collect()
@@ -918,6 +1050,7 @@ class PriorityRequestManager:
         if self.max_history > 0 and len(self.jobs) > self.max_history:
             await self.evict_to_size()
         if self.max_age_seconds > 0:
+            await self.cleanup_files_older_than(self.max_age_seconds)
             await self.evict_old_jobs(self.max_age_seconds)
 
     # ------------------------------------------------------------------
@@ -941,9 +1074,13 @@ class PriorityRequestManager:
         with self._subs_lock:
             queues = list(self._subscribers.get(job.uid, ()))
         for q in queues:
+            while q.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
+                    q.task_done()
             try:
                 q.put_nowait(job.model_copy(deep=True))
-            except asyncio.QueueFull:  # pragma: no cover (unbounded queue)
+            except asyncio.QueueFull:  # pragma: no cover - access is event-loop local
                 logger.warning(f"Subscriber queue full for {job.uid}; dropping event")
         # Then notify list subscribers with a fresh snapshot.
         if self._list_subscribers:
@@ -966,9 +1103,13 @@ class PriorityRequestManager:
             reverse=True,
         )
         for q in listeners:
+            while q.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
+                    q.task_done()
             try:
                 q.put_nowait(snapshot)
-            except asyncio.QueueFull:  # pragma: no cover (unbounded queue)
+            except asyncio.QueueFull:  # pragma: no cover - access is event-loop local
                 logger.warning("List subscriber queue full; dropping event")
 
     async def subscribe(self, uid: str) -> asyncio.Queue:
@@ -979,7 +1120,7 @@ class PriorityRequestManager:
         queue is the current job state (so consumers don't have to
         separately fetch it).
         """
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
         with self._subs_lock:
             self._subscribers.setdefault(uid, []).append(q)
         # Prime the queue with the current state so the consumer has it
@@ -1009,7 +1150,7 @@ class PriorityRequestManager:
         Subsequent items are also full snapshots, sorted by created_at
         desc.
         """
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
         with self._list_subs_lock:
             self._list_subscribers.append(q)
         # Prime with the current snapshot.

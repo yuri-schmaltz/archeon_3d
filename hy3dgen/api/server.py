@@ -1,4 +1,5 @@
 import hmac
+import ipaddress
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from hy3dgen.api import auth as _auth_module, signed_urls as _signed_urls
 from hy3dgen.api.auth import require_api_key
@@ -32,9 +34,23 @@ from hy3dgen.version import __version__
 logger = logging.getLogger("hy3dgen.api.server")
 
 
+def _require_auth_for_non_loopback(host: str | None = None) -> None:
+    """Prevent accidentally exposing an unauthenticated API on the network."""
+    bind_host = (host or get_bind_host()).strip().lower()
+    try:
+        is_loopback = ipaddress.ip_address(bind_host).is_loopback
+    except ValueError:
+        is_loopback = bind_host == "localhost"
+    if not is_loopback and _auth_module.get_api_key() is None:
+        raise RuntimeError(
+            "POLYFORGE_API_KEY is required when the API binds to a non-loopback host."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle (start/stop background workers)."""
+    _require_auth_for_non_loopback()
     configure_logging()
     logger.info("PolyForge API starting on %s:%s", get_bind_host(), get_bind_port())
     # Initialize the persistent store (or None to disable).
@@ -53,6 +69,7 @@ async def lifespan(app: FastAPI):
     if settings.use_shared_inference:
         service = InferenceService(
             device=settings.device,
+            max_queue_size=settings.max_queue_size,
             save_dir=SAVE_DIR,
             model_path=settings.model,
             model_subfolder=settings.model_subfolder,
@@ -64,6 +81,7 @@ async def lifespan(app: FastAPI):
     app.state.manager = PriorityRequestManager(
         device=settings.device,
         max_history=settings.max_history,
+        max_queue_size=settings.max_queue_size,
         max_age_seconds=settings.max_age_seconds,
         model_path=settings.model,
         model_subfolder=settings.model_subfolder,
@@ -143,7 +161,7 @@ async def health_check():
     import time
 
     manager = getattr(app.state, "manager", None)
-    queue_size = manager.queue.qsize() if manager is not None else 0
+    queue_size = manager.queue_depth if manager is not None else 0
     last_error = getattr(manager, "last_error", None) if manager is not None else None
     store = getattr(manager, "store", None) if manager is not None else None
     jobs_in_memory = len(manager.jobs) if manager is not None else 0
@@ -155,7 +173,7 @@ async def health_check():
     return {
         "status": "ok",
         "version": app.version,
-        "model_loaded": manager is not None and manager.worker is not None,
+        "model_loaded": manager is not None and manager.model_loaded,
         "queue_size": queue_size,
         "ready": manager is None or manager.ready,
         "jobs_in_memory": jobs_in_memory,
@@ -225,21 +243,63 @@ limiter.exempt(metrics_endpoint)
 _MAX_BODY_BYTES = settings.max_body_bytes or None
 
 
-@app.middleware("http")
-async def _enforce_body_size(request, call_next):
-    if _MAX_BODY_BYTES is None:
-        return await call_next(request)
-    cl = request.headers.get("content-length")
-    if cl is not None:
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app: ASGIApp, max_body_bytes: int | None = None) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        max_body_bytes = self.max_body_bytes
+        if max_body_bytes is None:
+            max_body_bytes = _MAX_BODY_BYTES
+        if max_body_bytes is None:
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (value for name, value in scope.get("headers", []) if name.lower() == b"content-length"),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > max_body_bytes:
+                    await Response(
+                        content=f"Request body too large (>{max_body_bytes} bytes).",
+                        status_code=413,
+                    )(scope, receive, send)
+                    return
+            except ValueError:
+                pass
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > max_body_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
         try:
-            if int(cl) > _MAX_BODY_BYTES:
-                return Response(
-                    content=f"Request body too large (>{_MAX_BODY_BYTES} bytes).",
-                    status_code=413,
-                )
-        except ValueError:
-            pass
-    return await call_next(request)
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            await Response(
+                content=f"Request body too large (>{max_body_bytes} bytes).",
+                status_code=413,
+            )(scope, receive, send)
+
+
+app.add_middleware(RequestBodyLimitMiddleware)
 
 
 class _AuthStaticFiles(StaticFiles):

@@ -26,8 +26,9 @@ x-backend-env: &backend-env
   POLYFORGE_MULTIVIEW_SUBFOLDER: ${POLYFORGE_MULTIVIEW_SUBFOLDER:-hunyuan3d-dit-v2-mv}
   POLYFORGE_MAX_HISTORY: ${POLYFORGE_MAX_HISTORY:-1000}
   POLYFORGE_MAX_AGE_SECONDS: ${POLYFORGE_MAX_AGE_SECONDS:-86400}
-  # API key (set in .env). When empty, auth is disabled (dev only).
-  POLYFORGE_API_KEY: ${POLYFORGE_API_KEY:-}
+  POLYFORGE_MAX_QUEUE_SIZE: ${POLYFORGE_MAX_QUEUE_SIZE:-4}
+  # Compose refuses to start without an API key; local non-Docker dev may omit it.
+  POLYFORGE_API_KEY: "${POLYFORGE_API_KEY:?Set POLYFORGE_API_KEY in .env before starting Compose}"
   POLYFORGE_CORS_ORIGINS: ${POLYFORGE_CORS_ORIGINS:-http://localhost}
   # Where generated meshes go (mounted as a volume so they survive restarts).
   POLYFORGE_SAVE_DIR: /data/meshes
@@ -52,8 +53,8 @@ services:
       # If you already have models downloaded, mount your HF cache here.
       - ${HF_HOME:-./.hf-cache}:/root/.cache/huggingface
     ports:
-      # Expose the API directly too (useful for curl / external clients).
-      - "${POLYFORGE_PORT:-8081}:8081"
+      # Host access is loopback-only; use a TLS reverse proxy for public access.
+      - "127.0.0.1:${POLYFORGE_PORT:-8081}:8081"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health').status == 200 else 1)"]
       interval: 30s

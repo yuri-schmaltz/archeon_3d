@@ -71,6 +71,26 @@ class TestRehydrateWithPayload:
         assert isinstance(request, TextTo3DRequest)
         assert request.prompt == "a small red cube"
 
+    async def test_shared_service_receives_rehydrated_job(self):
+        from hy3dgen.api.inference_service import InferenceService
+
+        payload = {"type": "text_to_3d", "prompt": "resume this job"}
+        previous = await _build_manager_with_active_job(payload)
+        service = InferenceService(device="cpu", save_dir="/tmp")
+        manager = PriorityRequestManager(
+            device="cpu",
+            store=previous.store,
+            inference_service=service,
+        )
+
+        assert await manager.rehydrate() == 1
+        assert manager.queue.empty()
+        assert service._queue.qsize() == 1
+        restored = service._queue.get_nowait()
+        assert restored.uid == "abc-123"
+        assert restored.params["type"] == "text_to_3d"
+        assert restored.params["prompt"] == "resume this job"
+
     async def test_rehydrated_queued_job_without_payload_is_marked_failed(self):
         m = await _build_manager_with_active_job(None)
         m.jobs.clear()

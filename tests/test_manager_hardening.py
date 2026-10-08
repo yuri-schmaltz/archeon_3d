@@ -182,7 +182,7 @@ class TestCancelJobHardening:
     @pytest.fixture
     def manager(self, _isolation):
         PriorityRequestManager = _isolation.PriorityRequestManager
-        m = PriorityRequestManager(device="cpu")
+        m = PriorityRequestManager(device="cpu", max_queue_size=5)
         m.store = None  # avoid touching SQLite
         return m
 
@@ -239,7 +239,7 @@ class TestDrainQueueOnShutdown:
     @pytest.fixture
     def manager(self, _isolation):
         PriorityRequestManager = _isolation.PriorityRequestManager
-        m = PriorityRequestManager(device="cpu")
+        m = PriorityRequestManager(device="cpu", max_queue_size=5)
         m.store = None
         return m
 

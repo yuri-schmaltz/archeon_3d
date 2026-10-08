@@ -69,6 +69,7 @@ ml = [
     "sentencepiece",
     "tqdm",
     "trimesh>=4",
+    "networkx>=3",
     "Pillow",
     "fast-simplification",
     "pymeshlab",
@@ -92,6 +93,7 @@ dev = [
     "ruff>=0.9",
     "Pillow",
     "trimesh>=4",
+    "networkx>=3",
     "fast-simplification",
 ]
 test = [

@@ -228,6 +228,58 @@ class TestMaxBodyBytes:
         finally:
             server_module._MAX_BODY_BYTES = original
 
+    @pytest.mark.asyncio
+    async def test_chunked_body_is_counted_without_content_length(self):
+        from hy3dgen.api.server import RequestBodyLimitMiddleware
+
+        delivered = []
+
+        async def app(scope, receive, send):
+            while True:
+                message = await receive()
+                delivered.append(message)
+                if not message.get("more_body", False):
+                    break
+
+        messages = iter(
+            [
+                {"type": "http.request", "body": b"123456", "more_body": True},
+                {"type": "http.request", "body": b"789", "more_body": False},
+            ]
+        )
+        sent = []
+
+        async def receive():
+            return next(messages)
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/generate",
+            "headers": [(b"content-type", b"application/json")],
+        }
+        middleware = RequestBodyLimitMiddleware(app, max_body_bytes=8)
+        await middleware(scope, receive, send)
+
+        assert len(delivered) == 1
+        assert sent[0]["status"] == 413
+
+
+class TestMaxQueueSize:
+    def test_default_queue_size_is_bounded(self):
+        from hy3dgen.api.config import Settings
+
+        assert Settings(_env_file=None).max_queue_size == 4
+
+    def test_reads_queue_size_from_environment(self, monkeypatch):
+        from hy3dgen.api.config import Settings
+
+        monkeypatch.setenv("POLYFORGE_MAX_QUEUE_SIZE", "3")
+        assert Settings(_env_file=None).max_queue_size == 3
+
 
 class TestUrlSigningKeySetting:
     def test_defaults_to_none(self):
@@ -340,6 +392,21 @@ class TestEnvExampleCoverage:
         assert not unknown, f"documented but not a Settings field: {unknown}"
 
 
+class TestDockerSecurityDefaults:
+    def test_backend_port_is_loopback_and_api_key_is_required(self):
+        from pathlib import Path
+
+        import yaml
+
+        compose = yaml.safe_load(
+            (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
+        )
+        api = compose["services"]["api"]
+
+        assert api["ports"][0].startswith("127.0.0.1:")
+        assert "POLYFORGE_API_KEY:?" in api["environment"]["POLYFORGE_API_KEY"]
+
+
 class TestCliDefaultUrl:
     def test_cli_defaults_to_the_server_port(self):
         """The CLI client must not point at a stale port."""
@@ -359,3 +426,20 @@ class TestCliDefaultUrl:
         for url in urls:
             port = url.rsplit(":", 1)[1]
             assert port == "8081", f"cli.py points at stale port {port}"
+
+
+class TestRemoteBindAuthentication:
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.20", "polyforge-api"])
+    def test_non_loopback_bind_requires_api_key(self, monkeypatch, host):
+        from hy3dgen.api import server as server_module
+
+        monkeypatch.setattr(server_module._auth_module, "get_api_key", lambda: None)
+        with pytest.raises(RuntimeError, match="POLYFORGE_API_KEY is required"):
+            server_module._require_auth_for_non_loopback(host)
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+    def test_loopback_bind_allows_missing_api_key(self, monkeypatch, host):
+        from hy3dgen.api import server as server_module
+
+        monkeypatch.setattr(server_module._auth_module, "get_api_key", lambda: None)
+        server_module._require_auth_for_non_loopback(host)

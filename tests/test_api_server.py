@@ -195,3 +195,19 @@ class TestServerApp:
         """The console script ``hy3dgen-api`` declared in setup.py needs a real main()."""
         from hy3dgen.api import server
         assert callable(getattr(server, "main", None))
+
+    async def test_full_inference_queue_returns_retryable_503(self):
+        from fastapi import HTTPException
+
+        from hy3dgen.api.routes import submit_job
+        from hy3dgen.api.schemas import TextTo3DRequest
+
+        class FullManager:
+            async def submit_job(self, *_args, **_kwargs):
+                raise asyncio.QueueFull
+
+        with pytest.raises(HTTPException) as exc_info:
+            await submit_job(TextTo3DRequest(prompt="cube"), FullManager())
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.headers["Retry-After"] == "5"
