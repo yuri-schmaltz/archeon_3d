@@ -51,9 +51,8 @@ inteiro não está concluído.
 - Títulos semânticos, contraste de texto, foco visível, alvos principais de toque
   e navegação das abas por setas/Home/End foram melhorados.
 - “New model” leva ao formulário; “Documentation” abre a documentação da API.
-- Limites no formulário: 10 MiB por imagem e 30 MiB por GLB. Payload selecionado
-  cabe no limite atual de 64 MiB do nginx após base64. Limites no servidor e
-  transporte multipart continuam pendentes.
+- Limites no formulário: 10 MiB por imagem e 30 MiB por GLB. A API agora aplica
+  limites de corpo e valida os tamanhos base64 no servidor.
 
 ### Instalação e operação
 
@@ -61,9 +60,8 @@ inteiro não está concluído.
   Wheel/sdist incluem módulos de modelos, launcher e fontes de extensões nativas.
 - Compilação CUDA/C++ é explícita: `POLYFORGE_BUILD_NATIVE=1` com
   `--no-build-isolation`, ou `make install-native` após instalar o stack ML.
-- Backend Docker usa porta 8081, alinhada ao Compose e ao proxy. Compose encaminha
-  configuração de modelos e retenção. Frontend usa Node 22 e API na mesma origem.
-- nginx encaminha documentação e OpenAPI, além de saúde, jobs e arquivos.
+- Launcher local detecta modo de inferência, instala backend/frontend e serve
+  a UI compilada pela mesma API. Frontend usa Node 22.
 - Dependências npm atualizadas dentro dos intervalos compatíveis; CI inclui Vitest,
   Node 22 e elimina caminhos duplicados na chamada de mypy.
 - READMEs e exemplos de ambiente atualizados, sem variável `VITE_*` para chave.
@@ -81,9 +79,7 @@ inteiro não está concluído.
 | `npm audit` | **0 vulnerabilidades reportadas** na resolução atual |
 | Build Python isolado | Wheel e sdist aprovados |
 | Wheel instalado em ambiente sem Torch | API inicializa sem carregar ML; módulos/fontes necessários presentes |
-| `docker compose config --quiet` | Aprovado |
-| Build Docker do frontend | Aprovado |
-| nginx da imagem construída | UI, health, docs, OpenAPI, autenticação e SSE aprovados com upstream de teste |
+| Instalação suportada | Launcher local; verificações Docker/proxy abaixo são apenas históricas |
 | Chromium: formulário e galeria | Chave incorreta/correta, SSE com header, modo isolado, otimização e download GLB aprovados; sem exceções de página |
 | Chromium: conectividade | Reconexão após queda de rede e polling autenticado quando SSE retorna 404 aprovados |
 | Chromium: layout | Sem overflow de documento/conteúdo principal em **360, 390, 768 e 1440 px** |
@@ -95,8 +91,8 @@ worker controlado que exporta uma malha GLB válida. O teste de multiview verifi
 os argumentos do pipeline e a exportação real, substituindo os modelos por stubs.
 Esses testes **não comprovam geração de qualidade pelos modelos Hunyuan**.
 O viewer externo foi bloqueado no teste do navegador; sua renderização 3D não foi
-validada. O smoke nginx usa portas temporárias e upstream de teste, sem subir o
-Compose inteiro.
+validada. Os resultados de smoke Docker/Nginx abaixo pertencem ao snapshot
+histórico da Etapa 1 e não são parte da instalação local atual.
 
 A suíte principal exclui os testes de imports/texgen/text2image e os grupos de
 memória, concorrência, estresse SSE e retenção sob carga. Não representa execução

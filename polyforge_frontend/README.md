@@ -18,8 +18,8 @@ npm run dev
 Open http://localhost:5173. The development API defaults to
 http://localhost:8081. Set `VITE_API_URL` to the backend base URL, without `/v1`.
 If unset in a production build, or explicitly empty, requests use the same
-origin as the UI. The Docker nginx proxy provides `/v1`, `/health`, `/docs`,
-`/openapi.json` and `/files`.
+origin as the UI. The local launcher builds the frontend and serves it from
+the FastAPI application on the same origin.
 
 If `POLYFORGE_API_KEY` (legacy `POLYFORGE_API_KEY`) is configured on the backend, enter the key in the
 connection screen. It stays in memory for that page session and is passed in
@@ -47,9 +47,9 @@ There is no frontend environment variable for secrets.
 - `src/design/`: tokens, focus styles and reusable primitives.
 
 Form drafts are separate for each mode; only the selected mode is submitted.
-Image uploads are limited to 10 MiB each and GLB uploads to 30 MiB. These UI
-limits keep the current base64 requests below nginx's 64 MiB body limit.
-Server-side payload limits and multipart uploads remain future work.
+Image uploads are limited to 10 MiB each and GLB uploads to 30 MiB. The API
+enforces decoded payload limits and a total request-body limit. Multipart
+uploads remain a possible future optimization.
 
 Use `apiClient` for HTTP actions and `useJobFeed` for streams. Label inputs,
 keep keyboard navigation for mode tabs and distinguish job failures from

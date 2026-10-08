@@ -184,27 +184,9 @@ class PriorityRequestManager:
             if self.inference_service is not None:
                 params = request.model_dump(mode="json", exclude_none=True)
                 params["uid"] = job.uid
-                try:
-                    await self.inference_service.submit(params, save_dir=SAVE_DIR)
-                except asyncio.QueueFull:
-                    job.status = JobStatus.FAILED
-                    job.error = "Queue capacity reached during recovery; please resubmit this job."
-                    job.completed_at = utc_now()
-                    job.updated_at = job.completed_at
-                    await self._persist(job)
-                    self._notify(job)
-                    continue
+                await self.inference_service.submit_recovered(params, save_dir=SAVE_DIR)
             else:
-                try:
-                    self.queue.put_nowait((100, time.time(), job.uid, request, SAVE_DIR))
-                except asyncio.QueueFull:
-                    job.status = JobStatus.FAILED
-                    job.error = "Queue capacity reached during recovery; please resubmit this job."
-                    job.completed_at = utc_now()
-                    job.updated_at = job.completed_at
-                    await self._persist(job)
-                    self._notify(job)
-                    continue
+                await self.queue.put((100, time.time(), job.uid, request, SAVE_DIR))
             replayed += 1
             logger.info(f"Re-queued active job {job.uid} after restart.")
         logger.info(
@@ -229,16 +211,6 @@ class PriorityRequestManager:
         returns).
         """
         if self._worker_task is None:
-            if self.store is not None:
-                if await_rehydrate:
-                    await self.rehydrate()
-                    self._ready_event.set()
-                else:
-                    self._rehydrate_task = asyncio.create_task(
-                        self._rehydrate_then_signal(), name="api-rehydrate"
-                    )
-            else:
-                self._ready_event.set()
             if self.inference_service is not None:
                 await self.inference_service.start()
                 self._service_listener = self.inference_service.subscribe()
@@ -249,6 +221,16 @@ class PriorityRequestManager:
             else:
                 self._worker_task = asyncio.create_task(self._process_queue())
                 logger.info("PriorityRequestManager worker started.")
+            if self.store is not None:
+                if await_rehydrate:
+                    await self.rehydrate()
+                    self._ready_event.set()
+                else:
+                    self._rehydrate_task = asyncio.create_task(
+                        self._rehydrate_then_signal(), name="api-rehydrate"
+                    )
+            else:
+                self._ready_event.set()
             if self._retention_task is None:
                 self._retention_task = asyncio.create_task(
                     self._retention_loop(), name="api-retention"

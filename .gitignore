@@ -187,6 +187,7 @@ hy3dgen.local.env
 
 # PolyForge launcher artefacts (regenerated on every ./launcher.sh run)
 .polyforge_launcher.stamp
+.polyforge_launcher.profile
 .polyforge_logs/
 
 # Generated from the FastAPI schema by `make openapi`.

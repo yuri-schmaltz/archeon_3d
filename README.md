@@ -88,17 +88,16 @@ The `polyforge_frontend/` React app talks to the FastAPI backend over HTTP.
 Run them as two separate processes:
 
 ```bash
-# Terminal 1 — backend (defaults: 0.0.0.0:9000 if POLYFORGE_API_KEY is set, else 127.0.0.1:9000)
-hy3dgen-api --port 9000
+# Terminal 1 — smart local install and API/UI server
+./launcher.sh
 
-# Terminal 2 — frontend dev server (http://localhost:5173)
+# Or run a separate Vite frontend during development (http://localhost:5173)
 cd polyforge_frontend
-cp .env.example .env       # then edit VITE_API_URL if your backend is not on 127.0.0.1:9000
-npm install
+npm ci
 npm run dev
 ```
 
-The frontend reads `VITE_API_URL` (default `http://localhost:9000`) and
+The frontend reads `VITE_API_URL` (default `http://localhost:8081`) and
 appends `/v1` to it. See `polyforge_frontend/.env.example` for the full list
 of environment variables.
 
@@ -108,16 +107,8 @@ For production:
 # Build a static bundle
 cd polyforge_frontend && npm run build
 
-# Serve the bundle with any static file server (nginx, Caddy, etc.) and
-# point it at the backend. The backend's CORS allow-list is configured
-# via the POLYFORGE_CORS_ORIGINS env var (comma-separated origins).
-```
-
-To run the entire stack in Docker, see `docker-compose.yml` at the project
-root:
-
-```bash
-docker compose up --build
+# The local API serves the built frontend from the same origin. The backend's
+# CORS allow-list is configured via POLYFORGE_CORS_ORIGINS for split dev mode.
 ```
 
 To submit a job from the terminal without using the GUI:

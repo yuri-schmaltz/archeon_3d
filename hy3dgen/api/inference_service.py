@@ -217,7 +217,22 @@ class InferenceService:
     # ------------------------------------------------------------------
 
     async def submit(self, params: dict[str, Any], save_dir: str | None = None) -> InferenceJob:
-        """Enqueue a new job and return its descriptor."""
+        """Enqueue a new job without waiting when the pending queue is full."""
+        return await self._submit(params, save_dir=save_dir, wait_for_capacity=False)
+
+    async def submit_recovered(
+        self, params: dict[str, Any], save_dir: str | None = None
+    ) -> InferenceJob:
+        """Replay a persisted job, waiting for a bounded queue slot."""
+        return await self._submit(params, save_dir=save_dir, wait_for_capacity=True)
+
+    async def _submit(
+        self,
+        params: dict[str, Any],
+        *,
+        save_dir: str | None,
+        wait_for_capacity: bool,
+    ) -> InferenceJob:
         if self.shutdown.is_set():
             raise RuntimeError("InferenceService has been stopped.")
         uid = params.get("uid") or uuid.uuid4().hex
@@ -236,15 +251,24 @@ class InferenceService:
             save_dir=target_dir,
             request_type=request_type,
         )
-        self._queue.put_nowait(job)
         self._jobs[uid] = job
-        self._publish(
-            InferenceEvent(
-                uid=uid,
-                stage=JobStage.QUEUED,
-                request_type=request_type,
-            )
+        queued_event = InferenceEvent(
+            uid=uid,
+            stage=JobStage.QUEUED,
+            request_type=request_type,
         )
+        if wait_for_capacity:
+            self._publish(queued_event)
+        try:
+            if wait_for_capacity:
+                await self._queue.put(job)
+            else:
+                self._queue.put_nowait(job)
+        except BaseException:
+            self._jobs.pop(uid, None)
+            raise
+        if not wait_for_capacity:
+            self._publish(queued_event)
         return job
 
     @property

@@ -1,6 +1,5 @@
 version: 2
 updates:
-  # Python deps in pyproject.toml
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -10,12 +9,10 @@ updates:
       prefix: "deps"
     labels:
       - "dependencies"
-    # Group patch+minor updates to keep PR noise down.
     groups:
       patch-and-minor:
         update-types: ["minor", "patch"]
 
-  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -25,7 +22,6 @@ updates:
     labels:
       - "dependencies"
 
-  # Node deps in polyforge_frontend/
   - package-ecosystem: "npm"
     directory: "/polyforge_frontend"
     schedule:
@@ -38,13 +34,4 @@ updates:
     groups:
       patch-and-minor:
         update-types: ["minor", "patch"]
-
-  # Docker base images
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    commit-message:
-      prefix: "deps(docker)"
-    labels:
-      - "dependencies"
+# Local dependency updates are managed by pip and npm.

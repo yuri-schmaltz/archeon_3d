@@ -392,19 +392,52 @@ class TestEnvExampleCoverage:
         assert not unknown, f"documented but not a Settings field: {unknown}"
 
 
-class TestDockerSecurityDefaults:
-    def test_backend_port_is_loopback_and_api_key_is_required(self):
+class TestLocalInstallerDefaults:
+    def test_smart_launcher_exposes_local_install_modes(self):
         from pathlib import Path
 
-        import yaml
+        root = Path(__file__).resolve().parent.parent
+        launcher = (root / "launcher.sh").read_text()
 
-        compose = yaml.safe_load(
-            (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
+        for mode in ("auto", "cuda", "cpu", "api-only"):
+            assert mode in launcher
+        assert "nvidia-smi" in launcher
+        assert "Node.js 22.12+" in launcher
+        assert "Existing venv" in launcher
+        assert "https://download.pytorch.org/whl/cpu" in launcher
+
+    def test_cuda_mode_fails_early_without_nvidia_driver(self):
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        if shutil.which("nvidia-smi"):
+            pytest.skip("host exposes nvidia-smi")
+        script = Path(__file__).resolve().parent.parent / "launcher.sh"
+        result = subprocess.run(
+            ["bash", str(script), "--mode", "cuda"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        api = compose["services"]["api"]
+        assert result.returncode != 0
+        assert "Install/fix the host NVIDIA driver" in result.stderr
 
-        assert api["ports"][0].startswith("127.0.0.1:")
-        assert "POLYFORGE_API_KEY:?" in api["environment"]["POLYFORGE_API_KEY"]
+    def test_container_installation_files_and_ci_are_removed(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        removed = (
+            "Dockerfile",
+            "Dockerfile.frontend",
+            "docker-compose.yml",
+            "Caddyfile",
+            "nginx.conf",
+            ".dockerignore",
+        )
+        assert all(not (root / path).exists() for path in removed)
+        ci = (root / ".github" / "workflows" / "ci.yml").read_text()
+        assert "docker/setup-buildx-action" not in ci
 
 
 class TestCliDefaultUrl:

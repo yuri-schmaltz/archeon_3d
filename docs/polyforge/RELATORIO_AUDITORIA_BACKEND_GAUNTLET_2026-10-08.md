@@ -1,12 +1,12 @@
 # Relatório de Auditoria do Backend: Gauntlet Loop
 
 **Data:** 2026-10-08  
-**Escopo:** API FastAPI, serviço de inferência compartilhado, manager de jobs, persistência SQLite, uploads, SSE, mesh operations e configuração Docker.  
-**Status:** remediações implementadas e verificadas em testes focados.
+**Escopo:** API FastAPI, instalação local, serviço de inferência compartilhado, manager de jobs, persistência SQLite, uploads, SSE e mesh operations.
+**Status:** remediações implementadas; instalação suportada somente local via `launcher.sh`.
 
 ## Resumo executivo
 
-O gauntlet confirmou falhas na exposição Docker, replay/cancelamento de jobs, limites de entrada e filas, retenção e estado operacional. As correções prioritárias foram aplicadas neste ciclo e os testes focados passaram. Os detalhes abaixo descrevem o comportamento original e registram a remediação implementada.
+O gauntlet confirmou falhas na exposição do deployment em container, replay/cancelamento de jobs, limites de entrada e filas, retenção e estado operacional. O suporte de instalação/container foi removido em favor de um launcher local que detecta CPU/CUDA e prepara backend/frontend. Os detalhes abaixo descrevem o comportamento original e registram as remediações aplicáveis ao backend.
 
 ## Gauntlet Loop
 
@@ -17,13 +17,11 @@ O gauntlet confirmou falhas na exposição Docker, replay/cancelamento de jobs, 
 
 ## Achados Confirmados e Remediações
 
-### P1 — A configuração Docker pode expor a API sem autenticação
+### P1 — O deployment anterior em container podia expor a API sem autenticação (removido)
 
-O Compose fixa `POLYFORGE_HOST=0.0.0.0`, publica a porta da API no host e define a chave como vazia quando não há valor no ambiente. Com chave vazia, `require_api_key` deixa passar as rotas protegidas. Iniciar o Compose sem configurar `.env` pode, portanto, disponibilizar geração, histórico e downloads sem autenticação para interfaces alcançáveis do host.
+O arquivo de Compose anterior fixava bind remoto com chave opcional. Essa configuração não existe mais: Dockerfiles, Compose, proxy Nginx/Caddy e automações associadas foram removidos. O launcher local usa loopback por padrão; o servidor também rejeita bind não-loopback sem `POLYFORGE_API_KEY`.
 
-Evidência: [docker-compose.yml](../../docker-compose.yml), [auth.py](../../hy3dgen/api/auth.py).
-
-**Implementado:** Compose falha se `POLYFORGE_API_KEY` estiver ausente/vazia; o lifespan rejeita qualquer bind não-loopback sem chave; `.env.example` agora usa loopback para desenvolvimento. Testes cobrem loopback permitido e bind remoto rejeitado.
+Evidência remanescente: [server.py](../../hy3dgen/api/server.py), [launcher.sh](../../launcher.sh).
 
 ### P1 — Reidratação deixa jobs ativos presos no modo padrão
 
@@ -45,9 +43,9 @@ Evidência: [routes.py](../../hy3dgen/api/routes.py), [manager.py](../../hy3dgen
 
 ### P1 — Limites de entrada não contêm todo o consumo de memória
 
-O middleware rejeita apenas `Content-Length` acima do limite; corpos sem esse header não são contados durante a leitura. A API está publicada diretamente pelo Compose, então chamadas que não passam pelo Nginx também não recebem o limite de `client_max_body_size`. Além disso, schemas aceitam strings base64 sem limites individuais de bytes, dimensões ou geometria; imagem comprimida pode expandir muito ao ser decodificada.
+O middleware anterior rejeitava apenas `Content-Length` acima do limite; corpos sem esse header não eram contados durante a leitura. Além disso, schemas aceitavam strings base64 sem limites individuais de bytes ou dimensões; imagens comprimidas podiam expandir muito ao serem decodificadas.
 
-Evidência: [server.py](../../hy3dgen/api/server.py), [schemas.py](../../hy3dgen/api/schemas.py), [inference.py](../../hy3dgen/inference.py), [docker-compose.yml](../../docker-compose.yml), [polyforge_frontend/README.md](../../polyforge_frontend/README.md).
+Evidência: [server.py](../../hy3dgen/api/server.py), [schemas.py](../../hy3dgen/api/schemas.py), [inference.py](../../hy3dgen/inference.py), [polyforge_frontend/README.md](../../polyforge_frontend/README.md).
 
 **Implementado:** middleware ASGI conta chunks mesmo sem `Content-Length`; decoder base64 impõe 10 MiB por imagem e 30 MiB por malha antes/depois da decodificação; imagem é limitada a 25 megapixels. Limites são anunciados por capabilities. Limite de geometria/timeout de GLB permanece pendente.
 
@@ -95,8 +93,7 @@ Evidência: [persistence.py](../../hy3dgen/api/persistence.py), [test_persistenc
 
 ## Pendências Residuais
 
-- **TLS público:** o Compose agora publica a API apenas em loopback e exige chave. Para acesso externo, habilitar um reverse proxy com TLS; o serviço Caddy de exemplo ainda está comentado.
-- **Replay acima da capacidade:** se o banco contiver mais jobs ativos do que `POLYFORGE_MAX_QUEUE_SIZE`, os excedentes são marcados `failed` com pedido de ressubmissão. Uma fila durável em batches evitaria esse passo manual.
+- **Replay acima da capacidade:** corrigido. O worker compartilhado inicia antes da reidratação e `submit_recovered()` aguarda slots, replayando jobs em batches sem exceder a capacidade; há teste com três jobs e capacidade um.
 - **Persistência assíncrona:** transições emitidas em tarefas separadas ainda podem gravar fora de ordem; serializar por UID e aguardar tarefas pendentes no shutdown.
 - **Semântica de prioridade:** manager legado usa `PriorityQueue`, mas o serviço compartilhado usa FIFO. Unificar a política ou documentar que prioridade só existe no modo legado.
 - **URLs assinadas:** configurar uma base URL pública validada em vez de derivá-la implicitamente de `Host`/headers de proxy.
@@ -107,18 +104,16 @@ Evidência: [persistence.py](../../hy3dgen/api/persistence.py), [test_persistenc
 
 ## Próximas Ações
 
-1. Configurar e testar TLS no proxy antes de publicar a interface fora de uma rede confiável.
-2. Definir replay durável para bancos com mais jobs pendentes que a capacidade da fila.
-3. Limitar CPU/memória concorrente de meshops e definir os limites geométricos aceitos.
-4. Serializar persistência por job e decidir se payloads precisam de criptografia em repouso.
+1. Limitar CPU/memória concorrente de meshops e definir limites geométricos.
+2. Serializar persistência por job e decidir se payloads precisam de criptografia em repouso.
 
 ## Verificação e limitações
 
 - Criado ambiente temporário Python 3.12.13 em `/tmp/polyforge-py312-venv`, compatível com `requires-python`; o `.venv` preexistente Python 3.14 foi preservado.
 - O perfil `.[test]` e os requirements agora declaram NetworkX para habilitar `trimesh.split()`; o ambiente temporário também recebeu essa dependência.
-- Regressão core (service, recuperação, manager, API/auth, config, DB, URLs assinadas, SSE, retenção, meshops, métricas e readiness): **190 passed, 0 failed**.
-- Concorrência HTTP, SSE stress e eviction sob carga: **9 passed, 0 failed**. Total final: **199 passed, 0 failed, 4.667 warnings**.
-- Diagnósticos do editor: sem erros nos módulos e testes alterados. Compose foi parseado como YAML e o teste confirma chave obrigatória e publicação loopback. Docker CLI não está instalado, então `docker compose config` não foi executado.
+- Regressão core (service, recuperação, manager, API/auth, config, DB, URLs assinadas, SSE, retenção, meshops, métricas, readiness e launcher): **218 passed, 0 failed**. Inclui replay de três jobs com capacidade um.
+- Concorrência HTTP, SSE stress e eviction sob carga: **9 passed, 0 failed** na rodada anterior; total validado: **227 passed, 0 failed, 4.670 warnings**.
+- `bash -n launcher.sh`, `launcher.sh --help`, YAML de CI/Dependabot e ausência de Dockerfiles/Compose/proxy foram validados. Diagnósticos sem erros.
 - A execução usou um stub mínimo de `torch` com CUDA indisponível apenas para liberar testes que fazem gate por import. Nenhum modelo foi carregado; inferência real, GPU e memória CUDA continuam sem validação.
 - Os warnings são principalmente chamadas a `datetime.utcnow()` nos fixtures de testes e não causaram falhas.
 

@@ -91,6 +91,60 @@ class TestRehydrateWithPayload:
         assert restored.params["type"] == "text_to_3d"
         assert restored.params["prompt"] == "resume this job"
 
+    async def test_shared_service_replays_more_jobs_than_queue_capacity(
+        self, tmp_path, monkeypatch
+    ):
+        from hy3dgen.api.inference_service import (
+            InferenceEvent,
+            InferenceService,
+            JobStage,
+        )
+
+        store = JobStore(str(tmp_path / "many-jobs.db"))
+        for index in range(3):
+            job = JobResponse(
+                uid=f"queued-{index}",
+                status=JobStatus.QUEUED,
+                created_at=datetime.utcnow().isoformat(),
+            )
+            await store.upsert(
+                job,
+                request_payload={"type": "text_to_3d", "prompt": f"job {index}"},
+            )
+
+        service = InferenceService(device="cpu", save_dir="/tmp", max_queue_size=1)
+        executed = []
+
+        async def fake_execute(self, job):
+            executed.append(job.uid)
+            self._publish(
+                InferenceEvent(
+                    uid=job.uid,
+                    stage=JobStage.COMPLETED,
+                    file_path=f"/tmp/{job.uid}.glb",
+                    request_type=job.request_type,
+                )
+            )
+
+        monkeypatch.setattr(InferenceService, "_execute", fake_execute)
+        manager = PriorityRequestManager(
+            device="cpu",
+            store=store,
+            max_queue_size=1,
+            inference_service=service,
+        )
+
+        await manager.start(await_rehydrate=True)
+        await asyncio.wait_for(service._queue.join(), timeout=2)
+        for _ in range(20):
+            if all(manager.jobs[uid].status == JobStatus.COMPLETED for uid in executed):
+                break
+            await asyncio.sleep(0.01)
+        await manager.stop()
+
+        assert set(executed) == {"queued-0", "queued-1", "queued-2"}
+        assert all(manager.jobs[uid].status == JobStatus.COMPLETED for uid in executed)
+
     async def test_rehydrated_queued_job_without_payload_is_marked_failed(self):
         m = await _build_manager_with_active_job(None)
         m.jobs.clear()

@@ -4,12 +4,12 @@
 #
 # No arguments required. Detects state, fixes gaps, then runs:
 #
-#   1. Picks up the project's ``.venv`` (or creates one).
-#   2. Verifies Python is in the supported range (3.10–3.12).
+#   1. Picks a supported Python 3.10–3.12 interpreter and project venv.
+#   2. Detects NVIDIA hardware and selects CUDA or CPU mode.
 #   3. Installs/updates the backend (``pip install -e .``) and the
 #      ``[ml]`` extra so the inference worker can load weights when
 #      a job is submitted. Skips already-satisfied dependencies.
-#   4. Runs ``npm install`` + ``npm run build`` for the frontend if
+#   4. Runs ``npm ci`` + ``npm run build`` for the frontend if
 #      ``polyforge_frontend/dist/`` is missing or older than its
 #      sources.
 #   5. Boots the PolyForge API on ``http://127.0.0.1:8081`` (override
@@ -27,8 +27,10 @@
 #   POLYFORGE_PORT      bind port           (default: 8081)
 #   POLYFORGE_API_KEY   X-API-Key gate     (default: off for local dev)
 #   POLYFORGE_NO_ML     skip the [ml] extra (default: unset)
-#   POLYFORGE_NO_FRONTEND skip the npm build (default: unset)
+#   POLYFORGE_NO_FRONTEND skip the npm build (default: unset; Node 22.12+ required)
 #   POLYFORGE_FORCE_REINSTALL touch the stamp to force reinstall
+#   POLYFORGE_INSTALL_MODE auto|cuda|cpu|api-only (default: auto)
+#   POLYFORGE_VENV       local venv path (default: .venv)
 #   POLYFORGE_UI        run the legacy Gradio ``launcher.py`` instead
 #                        of the API server (useful for users coming
 #                        from the old setup)
@@ -45,6 +47,10 @@
 #   --ui                same as POLYFORGE_UI=1 (legacy Gradio launcher)
 #   --no-ml             same as POLYFORGE_NO_ML=1
 #   --no-frontend       same as POLYFORGE_NO_FRONTEND=1
+#   --mode MODE         auto, cuda, cpu, or api-only
+#   --cpu               shorthand for --mode cpu
+#   --gpu               shorthand for --mode cuda
+#   --api-only          shorthand for --mode api-only
 #   --download-models   download model weights during install
 #   --model-scope SCOPE same as POLYFORGE_MODEL_SCOPE (shape, multiview,
 #                       tex, t2i or all)
@@ -64,7 +70,7 @@ die() { printf '[%s] ✗ %s\n' "$(_ts)" "$*" >&2; exit 1; }
 
 # --- argument parsing ---------------------------------------------------------
 show_help() {
-    sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^# -----------------------------------------------------------------------------$/p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -74,6 +80,15 @@ while (( $# )); do
         --ui)       POLYFORGE_UI=1 ;;
         --no-ml)    POLYFORGE_NO_ML=1 ;;
         --no-frontend) POLYFORGE_NO_FRONTEND=1 ;;
+        --mode)
+            [[ -n "${2:-}" ]] || die "--mode needs auto, cuda, cpu, or api-only."
+            POLYFORGE_INSTALL_MODE="$2"
+            shift
+            ;;
+        --mode=*) POLYFORGE_INSTALL_MODE="${1#*=}" ;;
+        --cpu) POLYFORGE_INSTALL_MODE=cpu ;;
+        --gpu) POLYFORGE_INSTALL_MODE=cuda ;;
+        --api-only) POLYFORGE_INSTALL_MODE=api-only ;;
         --download-models) POLYFORGE_DOWNLOAD_MODELS=1 ;;
         --no-download-models) POLYFORGE_DOWNLOAD_MODELS=0 ;;
         --model-scope)
@@ -102,41 +117,122 @@ unset _legacy_vars _legacy_prefix
 # --- paths --------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-VENV_DIR="$SCRIPT_DIR/.venv"
 STAMP_FILE="$SCRIPT_DIR/.polyforge_launcher.stamp"
+PROFILE_FILE="$SCRIPT_DIR/.polyforge_launcher.profile"
 PYPROJECT="$SCRIPT_DIR/pyproject.toml"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
 FRONTEND_DIR="$SCRIPT_DIR/polyforge_frontend"
 FRONTEND_DIST="$FRONTEND_DIR/dist"
 PACKAGE_JSON="$FRONTEND_DIR/package.json"
+PACKAGE_LOCK="$FRONTEND_DIR/package-lock.json"
 LOG_DIR="$SCRIPT_DIR/.polyforge_logs"
+VENV_DIR="${POLYFORGE_VENV:-$SCRIPT_DIR/.venv}"
+
+# --- 1. choose local execution mode ------------------------------------------
+install_mode="${POLYFORGE_INSTALL_MODE:-auto}"
+case "$install_mode" in
+    auto|cuda|cpu|api-only) ;;
+    *) die "Unknown install mode '$install_mode'. Choose auto, cuda, cpu, or api-only." ;;
+esac
+
+has_nvidia=0
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+    has_nvidia=1
+fi
+
+dotenv_device=""
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    dotenv_device="$(sed -n 's/^POLYFORGE_DEVICE=//p' "$SCRIPT_DIR/.env" | tail -n 1 | tr -d '\"' | xargs)"
+fi
+
+case "$install_mode" in
+    cuda)
+        (( has_nvidia )) || die "CUDA mode requested, but nvidia-smi cannot access a GPU. Install/fix the host NVIDIA driver or use --mode cpu."
+        selected_device=cuda
+        ;;
+    cpu)
+        selected_device=cpu
+        ;;
+    api-only)
+        selected_device=cpu
+        POLYFORGE_NO_ML=1
+        POLYFORGE_NO_FRONTEND=1
+        ;;
+    auto)
+        selected_device="${POLYFORGE_DEVICE:-${dotenv_device:-}}"
+        if [[ -z "$selected_device" ]]; then
+            if (( has_nvidia )); then selected_device=cuda; else selected_device=cpu; fi
+        fi
+        if [[ "$selected_device" == "cuda" ]] && (( ! has_nvidia )); then
+            warn "CUDA is configured but nvidia-smi found no usable GPU; selecting CPU for this run."
+            selected_device=cpu
+        fi
+        ;;
+esac
+[[ "$selected_device" == "cuda" || "$selected_device" == "cpu" ]] || die "POLYFORGE_DEVICE must be cuda or cpu."
+export POLYFORGE_DEVICE="$selected_device"
+log "Install mode: $install_mode; inference device: $POLYFORGE_DEVICE (NVIDIA GPU detected: $((has_nvidia)))"
+
+# Create the local configuration once. Never overwrite a user's existing .env.
+if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
+    cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+    if [[ "$OSTYPE" == darwin* ]]; then
+        sed -i '' "s/^POLYFORGE_DEVICE=.*/POLYFORGE_DEVICE=$POLYFORGE_DEVICE/" "$SCRIPT_DIR/.env"
+    else
+        sed -i "s/^POLYFORGE_DEVICE=.*/POLYFORGE_DEVICE=$POLYFORGE_DEVICE/" "$SCRIPT_DIR/.env"
+    fi
+    log "Created .env with loopback binding and device=$POLYFORGE_DEVICE."
+fi
 
 mkdir -p "$LOG_DIR"
 
-# --- 1. pick a Python ---------------------------------------------------------
-PYTHON_BIN="${PYTHON:-python3}"
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    die "Python interpreter '$PYTHON_BIN' not found on PATH."
+# Fail early if the full local UI cannot be built.
+if [[ "${POLYFORGE_NO_FRONTEND:-}" != "1" ]]; then
+    command -v node >/dev/null 2>&1 || die "Node.js 22.12+ is required for the local UI. Install Node or rerun with --no-frontend."
+    command -v npm >/dev/null 2>&1 || die "npm is required for the local UI. Install npm or rerun with --no-frontend."
+    NODE_VERSION="$(node -p 'process.versions.node')"
+    IFS=. read -r NODE_MAJOR NODE_MINOR _ <<< "$NODE_VERSION"
+    if (( NODE_MAJOR < 22 || (NODE_MAJOR == 22 && NODE_MINOR < 12) )); then
+        die "Node.js $NODE_VERSION is too old; install Node 22.12+ or rerun with --no-frontend."
+    fi
+    log "Node $NODE_VERSION detected"
+fi
+
+# --- 2. pick a supported Python ----------------------------------------------
+python_in_range() {
+    local candidate="$1" version major minor
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+    version="$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || return 1
+    major="${version%%.*}"
+    minor="${version##*.}"
+    (( major == 3 && minor >= 10 && minor <= 12 ))
+}
+
+PYTHON_BIN="${PYTHON:-}"
+if [[ -n "$PYTHON_BIN" ]]; then
+    python_in_range "$PYTHON_BIN" || die "PYTHON=$PYTHON_BIN must be Python 3.10, 3.11, or 3.12."
+else
+    for candidate in python3.12 python3.11 python3.10 python3; do
+        if python_in_range "$candidate"; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    done
+    [[ -n "$PYTHON_BIN" ]] || die "Python 3.10–3.12 not found. Install one or set PYTHON=/path/to/python3.12."
 fi
 
 PY_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 log "Detected Python $PY_VERSION ($PYTHON_BIN)"
-
-# Spec requires >=3.10,<3.13.
-PY_MAJOR="${PY_VERSION%%.*}"
-PY_MINOR="${PY_VERSION##*.}"
-if (( PY_MAJOR < 3 || (PY_MAJOR == 3 && PY_MINOR < 10) || (PY_MAJOR == 3 && PY_MINOR >= 13) )); then
-    die "Python $PY_VERSION is outside the supported range 3.10–3.12."
-fi
 
 # --- 2. create / refresh the venv --------------------------------------------
 needs_venv_create=0
 if [[ ! -d "$VENV_DIR" ]]; then
     needs_venv_create=1
 elif [[ ! -x "$VENV_DIR/bin/python" ]]; then
-    warn "Existing $VENV_DIR is broken; recreating."
-    rm -rf "$VENV_DIR"
-    needs_venv_create=1
+    die "Existing venv at $VENV_DIR is incomplete; it was left untouched. Set POLYFORGE_VENV to a new path."
+elif ! python_in_range "$VENV_DIR/bin/python"; then
+    existing_version="$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
+    die "Existing venv at $VENV_DIR uses Python $existing_version; it was left untouched. Set POLYFORGE_VENV to a new path using Python 3.10–3.12."
 fi
 
 if (( needs_venv_create )); then
@@ -148,7 +244,7 @@ fi
 source "$VENV_DIR/bin/activate"
 
 # Pin python to the venv's interpreter for the rest of the run.
-PYTHON="$(which python)"
+PYTHON="$VENV_DIR/bin/python"
 PIP=$(python -c 'import sys; print(sys.executable.replace("python", "pip", 1))' 2>/dev/null || echo "$VENV_DIR/bin/pip")
 
 # Upgrade pip + wheel first; wheel avoids egg-only installs.
@@ -221,8 +317,14 @@ do_backend_install() {
     # wheels and are what most downstream builds (diso, mmgp) assume
     # is available at build time.
     if [[ "${POLYFORGE_NO_ML:-}" != "1" ]]; then
-        log "Pre-installing torch + torchvision (large CUDA wheels)…"
-        if ! "$PYTHON" -m pip install --quiet torch torchvision; then
+        if [[ "$POLYFORGE_DEVICE" == "cpu" ]]; then
+            log "Pre-installing CPU-only torch + torchvision…"
+            TORCH_INSTALL=(--index-url https://download.pytorch.org/whl/cpu torch torchvision)
+        else
+            log "Pre-installing torch + torchvision for the detected CUDA environment…"
+            TORCH_INSTALL=(torch torchvision)
+        fi
+        if ! "$PYTHON" -m pip install --quiet "${TORCH_INSTALL[@]}"; then
             warn "torch install failed; will continue with the editable install and hope for the best."
         fi
     fi
@@ -263,18 +365,20 @@ do_backend_install() {
     die "Backend install failed (tried [ml,dev], [dev], and requirements.txt)."
 }
 
-if [[ "${POLYFORGE_NO_ML:-}" == "1" ]]; then
-    BACKEND_INSTALL_CMD=("$PYTHON" -m pip install --quiet -e ".[dev]")
-else
-    BACKEND_INSTALL_CMD=("$PYTHON" -m pip install --quiet -e ".[ml,dev]")
+current_profile="${POLYFORGE_NO_ML:-0}:${POLYFORGE_DEVICE}"
+profile_changed=0
+if [[ ! -f "$PROFILE_FILE" || "$(<"$PROFILE_FILE")" != "$current_profile" ]]; then
+    profile_changed=1
 fi
 
-if manifest_changed "$STAMP_FILE" "${BACKEND_MANIFESTS[@]}"; then
+if (( profile_changed )) || manifest_changed "$STAMP_FILE" "${BACKEND_MANIFESTS[@]}"; then
     if [[ "${POLYFORGE_NO_ML:-}" == "1" ]]; then
         "$PYTHON" -m pip install --quiet -e ".[dev]"
     else
         do_backend_install || die "Backend install failed."
     fi
+    current_profile="${POLYFORGE_NO_ML:-0}:${POLYFORGE_DEVICE}"
+    printf '%s' "$current_profile" > "$PROFILE_FILE"
     touch "$STAMP_FILE"
 else
     log "Backend dependencies up-to-date (stamp $STAMP_FILE)."
@@ -343,30 +447,24 @@ fi
 
 # --- 6. frontend build (skip if disabled) -------------------------------------
 if [[ "${POLYFORGE_NO_FRONTEND:-}" != "1" ]]; then
-    if ! command -v node >/dev/null 2>&1; then
-        warn "Node.js not found on PATH; skipping frontend build. Install Node 20+ to enable."
-    else
-        NODE_VERSION="$(node --version)"
-        log "Node $NODE_VERSION detected"
         needs_npm_install=0
         if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
             needs_npm_install=1
-        elif manifest_changed "$STAMP_FILE" "$PACKAGE_JSON"; then
+        elif manifest_changed "$STAMP_FILE" "$PACKAGE_JSON" "$PACKAGE_LOCK"; then
             needs_npm_install=1
         fi
 
         if (( needs_npm_install )); then
-            log "Installing frontend dependencies (npm install)…"
-            ( cd "$FRONTEND_DIR" && npm install --no-audit --no-fund )
+            log "Installing frontend dependencies (npm ci)…"
+            ( cd "$FRONTEND_DIR" && npm ci --no-audit --no-fund )
         fi
 
-        if manifest_changed "$STAMP_FILE" "$PACKAGE_JSON" || [[ ! -d "$FRONTEND_DIST" ]]; then
+        if manifest_changed "$STAMP_FILE" "$PACKAGE_JSON" "$PACKAGE_LOCK" || [[ ! -d "$FRONTEND_DIST" ]]; then
             log "Building frontend (npm run build)…"
             ( cd "$FRONTEND_DIR" && npm run build )
         else
             log "Frontend dist present and fresh; skipping build."
         fi
-    fi
 fi
 
 # Final stamp update so we don't reinstall on every invocation.

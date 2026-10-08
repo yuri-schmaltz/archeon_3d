@@ -4,6 +4,8 @@ Data: 4 de outubro de 2026. Base analisada: commit `763c35e`.
 
 Este documento preserva o diagnóstico inicial. As correções já executadas e as
 validações posteriores estão no [relatório da implementação inicial](IMPLEMENTACAO_ETAPA_1.md).
+É um snapshot anterior à adoção do launcher local; os trechos sobre Docker,
+Compose e proxy são históricos e não descrevem o fluxo suportado atualmente.
 
 ## 1. Diagnóstico executivo
 
@@ -19,7 +21,7 @@ Recomendo preservar React, TypeScript, Vite, FastAPI e o design system existente
 - SQLite com WAL, armazenamento do pedido original e recuperação de trabalhos após reinício.
 - SSE da lista de trabalhos, fallback de polling, endpoint de saúde e métricas Prometheus.
 - 28 arquivos na pasta de testes; 216 testes aprovados no recorte principal executado.
-- Docker, Compose, Makefile e CI já presentes, embora necessitem correções para cumprir o fluxo documentado.
+- Launcher local, Makefile e CI já presentes; Docker/Compose foram removidos depois deste snapshot.
 
 ### Avaliação por dimensão
 

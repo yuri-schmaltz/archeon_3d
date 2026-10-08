@@ -1,7 +1,7 @@
 """Pre-download the PolyForge inference models.
 
 Useful for users who want to populate the HF cache ahead of time
-(e.g. on a slow connection, or to warm a container image). The
+(e.g. on a slow connection or before an offline local run). The
 default PolyForge config loads models lazily on the first job; this
 script does the download step in isolation without spinning up the
 shape pipeline.

@@ -65,7 +65,7 @@ Há **quatro** formas:
    .venv/bin/python scripts/download_models.py --scope all
    # ou: make models | make models SCOPE=t2i
    ```
-   Útil em conexões lentas, imagens Docker, ou CI.
+  Útil em conexões lentas, instalações locais demoradas ou CI.
 
 ## Onde ficam os pesos
 

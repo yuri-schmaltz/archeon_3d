@@ -43,27 +43,42 @@ inputs and the backend figures out the rest.
     vitals and a status ticker footer that shows the last SSE event
 
 - **Ops** (everything below)
-  - `pyproject.toml`, Makefile, `docker-compose.yml`, `.env.example`,
-    GitHub Actions CI, structured logging, nginx config
+  - `pyproject.toml`, Makefile, `.env.example`, GitHub Actions CI,
+    structured logging, local launcher
 
 ## Quickstart
 
-### A. Docker (recommended for most users)
+### A. Smart local install (recommended)
 
 ```bash
 git clone https://github.com/yuri-schmaltz/my-hunyuan-3D
 cd my-hunyuan-3D
-cp .env.example .env
-# edit .env: set POLYFORGE_API_KEY, POLYFORGE_DEVICE=cuda, etc.
-docker compose up --build
+./launcher.sh
 ```
 
-The API is on `http://localhost:8081`, the UI on `http://localhost:8080`.
-Generated meshes land in the `polyforge-data` named volume.
+The launcher checks Python 3.10–3.12, detects an NVIDIA GPU with `nvidia-smi`,
+selects CUDA or CPU, creates a local `.venv` and `.env` when missing, installs
+the backend and frontend, then starts the API. Open
+`http://127.0.0.1:8081`. It never installs system drivers or uses `sudo`.
 
-### B. Local dev (no Docker)
+Choose the install mode explicitly when needed:
 
-Prereqs: Python 3.10–3.12, Node 22.12+, NVIDIA GPU for model validation.
+```bash
+./launcher.sh --mode auto      # CUDA when an NVIDIA GPU is usable, otherwise CPU
+./launcher.sh --mode cuda      # require a usable NVIDIA driver/GPU
+./launcher.sh --mode cpu       # install ML dependencies, run inference on CPU
+./launcher.sh --mode api-only  # skip ML and frontend dependencies
+```
+
+Weights are downloaded lazily on first use. The launcher can ask whether to
+download them during setup, or you can choose `--download-models` and
+`--model-scope shape|multiview|tex|t2i|all`. Use `--no-download-models` to skip
+the prompt. If Node.js 22.12+ is unavailable, install Node or use
+`--no-frontend` for an API-only setup.
+
+### B. Manual local development
+
+Prereqs: Python 3.10–3.12, Node 22.12+; an NVIDIA GPU is optional for CUDA mode.
 
 ```bash
 git clone https://github.com/yuri-schmaltz/my-hunyuan-3D
@@ -73,18 +88,20 @@ make install-frontend  # installs npm deps
 make dev               # starts API on :8081 and Vite dev server on :5173
 ```
 
+Without an NVIDIA GPU, set `POLYFORGE_DEVICE=cpu` in `.env` before `make dev`.
+The smart launcher detects this case automatically.
+
 Open <http://localhost:5173> for the UI, or hit the API directly:
 
 For API development without the ML stack, use `make install-api` instead of
 `make install`; it starts the service but does not enable model inference.
 Texture generation also requires the native rasterizer and mesh processor:
 with the CUDA toolkit and a C++ compiler installed, run `make install-native`.
-The Docker backend opts into this compilation during its build.
 
 When an API key is configured, the frontend asks for it at runtime. The key
 is held in memory and sent with both HTTP and SSE requests. Do not put it
-in `VITE_*` build variables. Production Docker builds use the nginx proxy
-on the UI's origin; local development defaults to API port 8081.
+in `VITE_*` build variables. The smart launcher serves the built UI and API
+from one loopback origin; `make dev` uses the Vite server on port 5173.
 
 ```bash
 curl -X POST http://localhost:8081/v1/generate \
@@ -205,9 +222,9 @@ Liveness + readiness with: `model_loaded`, `queue_size`, `jobs_in_store`,
 ```
 ┌─────────────────┐      HTTP/SSE       ┌──────────────────────────┐
 │  React frontend │ ───────────────────▶ │  FastAPI (uvicorn)       │
-│  (Vite, port    │ ◀─────────────────── │   ├─ /v1/generate        │
-│   5173 dev /    │                      │   ├─ /v1/jobs/...        │
-│   80 docker)    │                      │   └─ /v1/jobs/events     │
+│  (Vite dev or   │ ◀─────────────────── │   ├─ /v1/generate        │
+│   API-served dist)│                    │   ├─ /v1/jobs/...        │
+│   port 5173/8081│                      │   └─ /v1/jobs/events     │
 └─────────────────┘                      │                          │
                                          │  PriorityRequestManager  │
                                          │   ├─ asyncio queue       │
@@ -217,7 +234,7 @@ Liveness + readiness with: `model_loaded`, `queue_size`, `jobs_in_store`,
                                                       │ writes
                                                       ▼
                                          ┌──────────────────────────┐
-                                         │  ./polyforge-data volume   │
+                                         │  local XDG data/cache     │
                                          │   ├─ meshes/             │
                                          │   ├─ jobs.db (WAL)       │
                                          │   └─ logs/polyforge-api.log│
@@ -240,17 +257,16 @@ make status      # hit /health on a running API
 ## Troubleshooting
 
 **`RuntimeError: No CUDA GPUs are available`**
-You're on a machine without an NVIDIA GPU. Set `POLYFORGE_DEVICE=cpu` or
-use the Docker compose profile that pins the NVIDIA runtime.
+The launcher could not find a usable NVIDIA GPU. Run `./launcher.sh --mode cpu`
+or install/fix the host NVIDIA driver and rerun `./launcher.sh --mode cuda`.
 
 **`HF_HUB_OFFLINE=1` / model download fails**
 Pre-download with the `snapshot_download` snippet above. Make sure
 `HF_HOME` is on a disk with at least 30 GB free.
 
 **Frontend can't reach the API (CORS)**
-Set `POLYFORGE_CORS_ORIGINS` to include the frontend URL. Default is
-`http://localhost:5173`. For Docker on the same host, use
-`http://localhost:8080`.
+When using `make dev`, set `POLYFORGE_CORS_ORIGINS` to include the Vite URL
+(`http://localhost:5173`). The smart launcher serves UI and API on one origin.
 
 **`X-API-Key` 401 even though I set the env var**
 The API key is loaded once at startup. Restart the API after changing
@@ -258,10 +274,8 @@ The API key is loaded once at startup. Restart the API after changing
 endpoint when present.
 
 **SSE connection drops after ~1 minute**
-This is usually a reverse proxy (nginx, Caddy) without `proxy_buffering
-off; proxy_read_timeout 86400s;` set. The included `nginx.conf` already
-has these. If you fronted the API with your own proxy, copy those
-settings.
+If you run a separate reverse proxy, disable response buffering and use a long
+read timeout for the `/v1/jobs/events` stream.
 
 ## License
 
@@ -269,6 +283,9 @@ Inherits the upstream Tencent Hunyuan3D-2 license (see `LICENSE`).
 PolyForge-specific additions are MIT-licensed unless otherwise noted.
 
 ## Hardening history
+
+Historical release notes below include deployment features that are no longer
+supported; the current installation and run path is local via `launcher.sh`.
 
 This fork ships a 13-PR hardening stack on top of upstream
 Hunyuan3D-2. Each PR is linear (`#N` branches from `#N-1`'s tip)
@@ -280,11 +297,11 @@ them all.
 | 1 | `fix/p0-p1-fixes` | Removes duplicated function defs, fixes `replace_property_getter` typo, silences noisy logs, fixes import error masking. |
 | 2 | `feature/followup-improvements` | CI workflow, `/v1/meshops/texture_mesh` endpoint, 3D mesh preview in the gallery. |
 | 3 | `feature/security-and-ux-improvements` | API key auth (`X-API-Key`), CORS fix, bounded job history with eviction, multiview tab, state sharing between jobs. |
-| 4 | `feature/polish-and-tools` | Docker stack, `hy3dgen-cli` standalone client, mypy config, OpenAPI examples, status filter, integration tests. |
+| 4 | `feature/polish-and-tools` | Former container stack (removed), CLI, mypy config, OpenAPI examples, status filter, integration tests. |
 | 5 | `feature/realtime-and-persistence` | SQLite-backed `JobStore`, per-job SSE `/v1/jobs/{uid}/events`. |
 | 6 | `feature/payload-rehydrate-and-list-sse` | Rehydrates the original request payload on restart so active jobs can resume; adds list-level SSE `/v1/jobs/events`. |
 | 7 | `feature/unified-generation-request` | Single `GenerationRequest` schema with mode inference (text_to_3d / image_to_3d / multiview / texture_mesh). |
-| 8 | `feature/out-of-the-box` | `pyproject.toml` packaging, Makefile, `docker-compose.yml`, CI, README. |
+| 8 | `feature/out-of-the-box` | `pyproject.toml` packaging, Makefile, CI and README. |
 | 9 | `feature/modernize` | Ruff, Pydantic Settings, OpenTelemetry hooks, Prometheus metrics, rate limiting, dep cleanup. |
 | 10 | `feature/aiosqlite-and-final-polish` | aiosqlite-backed store, `/v1/admin/stats` endpoint. |
 | 11 | `feature/frontend-redesign` | Full UI redesign: "Laboratory Instrument" aesthetic, design tokens, primitive components, 1000-job stress test. |
@@ -308,6 +325,9 @@ specification.
 
 ## Hardening history
 
+Historical release notes below include deployment features that are no longer
+supported; the current installation and run path is local via `launcher.sh`.
+
 This fork ships a 13-PR hardening stack on top of upstream
 Hunyuan3D-2. Each PR is linear (`#N` branches from `#N-1`'s tip)
 and self-contained, so you can pick the ones you want or take
@@ -318,11 +338,11 @@ them all.
 | 1 | `fix/p0-p1-fixes` | Removes duplicated function defs, fixes `replace_property_getter` typo, silences noisy logs, fixes import error masking. |
 | 2 | `feature/followup-improvements` | CI workflow, `/v1/meshops/texture_mesh` endpoint, 3D mesh preview in the gallery. |
 | 3 | `feature/security-and-ux-improvements` | API key auth (`X-API-Key`), CORS fix, bounded job history with eviction, multiview tab, state sharing between jobs. |
-| 4 | `feature/polish-and-tools` | Docker stack, `hy3dgen-cli` standalone client, mypy config, OpenAPI examples, status filter, integration tests. |
+| 4 | `feature/polish-and-tools` | Former container stack (removed), CLI, mypy config, OpenAPI examples, status filter, integration tests. |
 | 5 | `feature/realtime-and-persistence` | SQLite-backed `JobStore`, per-job SSE `/v1/jobs/{uid}/events`. |
 | 6 | `feature/payload-rehydrate-and-list-sse` | Rehydrates the original request payload on restart so active jobs can resume; adds list-level SSE `/v1/jobs/events`. |
 | 7 | `feature/unified-generation-request` | Single `GenerationRequest` schema with mode inference (text_to_3d / image_to_3d / multiview / texture_mesh). |
-| 8 | `feature/out-of-the-box` | `pyproject.toml` packaging, Makefile, `docker-compose.yml`, CI, README. |
+| 8 | `feature/out-of-the-box` | `pyproject.toml` packaging, Makefile, CI and README. |
 | 9 | `feature/modernize` | Ruff, Pydantic Settings, OpenTelemetry hooks, Prometheus metrics, rate limiting, dep cleanup. |
 | 10 | `feature/aiosqlite-and-final-polish` | aiosqlite-backed store, `/v1/admin/stats` endpoint. |
 | 11 | `feature/frontend-redesign` | Full UI redesign: "Laboratory Instrument" aesthetic, design tokens, primitive components, 1000-job stress test. |
