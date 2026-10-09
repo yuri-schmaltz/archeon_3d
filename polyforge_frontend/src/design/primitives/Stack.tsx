@@ -19,6 +19,16 @@ export interface StackProps {
   wrap?: boolean;
   className?: string;
   children: React.ReactNode;
+  /** ARIA role forwarded to the rendered div. */
+  role?: string;
+  /** ARIA label forwarded to the rendered div. */
+  'aria-label'?: string;
+  /** ARIA labelledby forwarded to the rendered div. */
+  'aria-labelledby'?: string;
+  /** ARIA live region politeness. */
+  'aria-live'?: 'off' | 'polite' | 'assertive';
+  /** Tabindex forwarded to the rendered div. */
+  tabIndex?: number;
 }
 
 const alignMap: Record<Align, string> = {
@@ -44,8 +54,15 @@ export const Stack: React.FC<StackProps> = ({
   wrap = false,
   className,
   children,
+  role,
+  ...aria
 }) => (
   <div
+    role={role}
+    aria-label={aria['aria-label']}
+    aria-labelledby={aria['aria-labelledby']}
+    aria-live={aria['aria-live']}
+    tabIndex={aria.tabIndex}
     className={clsx(
       "flex",
       direction === "row" ? "flex-row" : "flex-col",

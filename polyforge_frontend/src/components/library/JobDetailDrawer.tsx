@@ -166,37 +166,37 @@ export const JobDetailDrawer: React.FC<JobDetailDrawerProps> = ({ uid, onClose }
                                 </Stack>
                                 <Divider />
                                 <Stack gap={2}>
-                                    <Row label="Status" value={job.status} />
+                                    <Row label={t('job.field.status')} value={job.status} />
                                     <Row
-                                        label="Tipo"
-                                        value={job.request_type ?? 'unknown'}
+                                        label={t('job.field.type')}
+                                        value={job.request_type ?? t('job.field.typeUnknown')}
                                     />
                                     {job.stage && (
                                         <Row
-                                            label="Etapa"
+                                            label={t('job.field.stage')}
                                             value={t(`stage.${job.stage}`, { defaultValue: job.stage })}
                                         />
                                     )}
                                     {job.stage_progress != null && (
                                         <Row
-                                            label="Progresso"
+                                            label={t('job.field.progress')}
                                             value={`${Math.round(job.stage_progress * 100)}%`}
                                         />
                                     )}
-                                    <Row label="Criado em" value={job.created_at} />
+                                    <Row label={t('job.field.createdAt')} value={job.created_at} />
                                     {job.completed_at && (
                                         <Row
-                                            label="Concluído em"
+                                            label={t('job.field.completedAt')}
                                             value={job.completed_at}
                                         />
                                     )}
                                     <Row
-                                        label="Duração"
+                                        label={t('job.field.duration')}
                                         value={formatSeconds(durationMs(job))}
                                     />
                                     {job.error && (
                                         <Row
-                                            label="Erro"
+                                            label={t('job.field.error')}
                                             value={job.error}
                                             danger
                                         />

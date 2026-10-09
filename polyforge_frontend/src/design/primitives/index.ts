@@ -12,3 +12,4 @@ export {
 } from "./Field";
 export { StatusDot, type StatusKind, type StatusDotProps } from "./StatusDot";
 export { Pill, type PillProps } from "./Pill";
+export { Stepper, type StepperProps, type StepperStep } from "./Stepper";

@@ -106,7 +106,7 @@ export const JobRow: React.FC<JobRowProps> = ({ job, statusKind, onOpen, onReuse
                         onOpen();
                     }
                 }}
-                className="text-left min-w-0 cursor-pointer focus:outline-none focus-visible:bg-surface-1"
+                className="text-left min-w-0 cursor-pointer focus:outline-none focus-visible:bg-surface-1 focus-visible:ring-1 focus-visible:ring-accent"
             >
                 <Stack gap={1}>
                     <Stack direction="row" gap={2} align="center">

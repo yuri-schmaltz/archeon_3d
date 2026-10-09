@@ -27,16 +27,17 @@ import {
   Pill,
   type StatusKind,
 } from "../../design/primitives";
+import { useT } from "../../i18n";
 
 type StatusFilter = "all" | JobStatusType;
 
-const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: JobStatus.QUEUED, label: "Queued" },
-  { key: JobStatus.PROCESSING, label: "Processing" },
-  { key: JobStatus.COMPLETED, label: "Completed" },
-  { key: JobStatus.FAILED, label: "Failed" },
-  { key: JobStatus.CANCELLED, label: "Cancelled" },
+const STATUS_FILTERS: { key: StatusFilter; i18n: string }[] = [
+  { key: "all", i18n: "gallery.filter.all" },
+  { key: JobStatus.QUEUED, i18n: "gallery.filter.queued" },
+  { key: JobStatus.PROCESSING, i18n: "gallery.filter.processing" },
+  { key: JobStatus.COMPLETED, i18n: "gallery.filter.completed" },
+  { key: JobStatus.FAILED, i18n: "gallery.filter.failed" },
+  { key: JobStatus.CANCELLED, i18n: "gallery.filter.cancelled" },
 ];
 
 const kindByStatus: Record<JobStatusType, StatusKind> = {
@@ -48,6 +49,7 @@ const kindByStatus: Record<JobStatusType, StatusKind> = {
 };
 
 export const JobGallery: React.FC = () => {
+  const t = useT();
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingUid, setPendingUid] = useState<string | null>(null);
   const [previewingUid, setPreviewingUid] = useState<string | null>(null);
@@ -178,19 +180,19 @@ export const JobGallery: React.FC = () => {
               uppercase
             >
               {listIsFallback
-                ? "polling"
+                ? t("gallery.stream.polling")
                 : listConnected
-                ? "live"
-                : "connecting"}
+                ? t("gallery.stream.live")
+                : t("gallery.stream.connecting")}
             </Text>
           </Stack>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => refetchList()}
-            aria-label="Refresh jobs"
+            aria-label={t("gallery.refresh.aria")}
           >
-            ↻ Refresh
+            ↻ {t("gallery.refresh")}
           </Button>
         </Stack>
       </div>
@@ -199,7 +201,7 @@ export const JobGallery: React.FC = () => {
       {/* Status filter row */}
       <div
         role="group"
-        aria-label="Filter jobs by status"
+        aria-label={t("gallery.filter.aria")}
         className="flex border-b border-border overflow-x-auto"
       >
         {STATUS_FILTERS.map((f) => {
@@ -222,7 +224,7 @@ export const JobGallery: React.FC = () => {
                   : "border-transparent text-fg-muted hover:text-fg")
               }
             >
-              <span>{f.label}</span>
+              <span>{t(f.i18n)}</span>
               <Text
                 voice="mono"
                 size="2xs"
@@ -271,7 +273,7 @@ export const JobGallery: React.FC = () => {
                     tracking="widest"
                     uppercase
                   >
-                    Preview
+                    {t("gallery.preview.eyebrow")}
                   </Text>
                   <Text
                     voice="mono"
@@ -287,16 +289,20 @@ export const JobGallery: React.FC = () => {
                     tone="dim"
                     tracking="wider"
                   >
-                    {listIsFallback ? "· polling" : listConnected ? "· live" : "· connecting"}
+                    {listIsFallback
+                      ? `· ${t("gallery.stream.polling")}`
+                      : listConnected
+                        ? `· ${t("gallery.stream.live")}`
+                        : `· ${t("gallery.stream.connecting")}`}
                   </Text>
                 </Stack>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setPreviewingUid(null)}
-                  aria-label="Close preview"
+                  aria-label={t("gallery.preview.close.aria")}
                 >
-                  Close ×
+                  {t("gallery.preview.close")} ×
                 </Button>
               </div>
               <MeshPreview
@@ -435,6 +441,7 @@ const JobRow: React.FC<{
   onOptimize: () => void;
   onSeparate: () => void;
 }> = ({ job, pending, separating, isPreviewing, previewUrl, onPreviewToggle, onCancel, onOptimize, onSeparate }) => {
+  const t = useT();
   const kind = kindByStatus[job.status];
   const isDone = job.status === JobStatus.COMPLETED;
   const isCancellable =
@@ -478,7 +485,7 @@ const JobRow: React.FC<{
           as="div"
           className="mt-1"
         >
-          {new Date(job.created_at).toLocaleDateString()} · {time} · {job.request_type ?? "Generation"}
+          {new Date(job.created_at).toLocaleDateString()} · {time} · {job.request_type ?? t("gallery.meta.fallback")}
         </Text>
         {job.error && <p className="text-sm text-danger mt-2 break-words">{job.error}</p>}
       </div>
@@ -489,8 +496,12 @@ const JobRow: React.FC<{
               variant="ghost"
               size="sm"
               onClick={onPreviewToggle}
-              aria-label={isPreviewing ? "Hide preview" : "Show preview"}
-              title={isPreviewing ? "Hide preview" : "Show preview"}
+              aria-label={isPreviewing
+                ? t("gallery.action.preview.hide")
+                : t("gallery.action.preview.show")}
+              title={isPreviewing
+                ? t("gallery.action.preview.hide")
+                : t("gallery.action.preview.show")}
             >
               {isPreviewing ? <EyeOff size={12} /> : <Eye size={12} />}
             </Button>
@@ -504,8 +515,8 @@ const JobRow: React.FC<{
                 "text-[11px] text-fg-muted hover:text-fg hover:bg-surface-2 " +
                 "transition-colors duration-[120ms]"
               }
-              title="Download"
-              aria-label="Download mesh"
+              title={t("gallery.action.download")}
+              aria-label={t("gallery.action.download")}
             >
               <Download size={12} />
             </a>
@@ -514,8 +525,8 @@ const JobRow: React.FC<{
               size="sm"
               onClick={onOptimize}
               disabled={pending}
-              title="Optimize (Decimate 50%)"
-              aria-label="Optimize mesh"
+              title={t("gallery.action.optimize.title")}
+              aria-label={t("gallery.action.optimize")}
             >
               <Scissors size={12} />
             </Button>
@@ -524,8 +535,8 @@ const JobRow: React.FC<{
               size="sm"
               onClick={onSeparate}
               disabled={separating || pending}
-              title="Separate parts"
-              aria-label="Separate parts"
+              title={t("gallery.action.separate")}
+              aria-label={t("gallery.action.separate")}
             >
               <Layers size={12} />
             </Button>
@@ -537,8 +548,8 @@ const JobRow: React.FC<{
             size="sm"
             onClick={onCancel}
             disabled={pending}
-            title="Cancel job"
-            aria-label="Cancel job"
+            title={t("gallery.action.cancel")}
+            aria-label={t("gallery.action.cancel")}
           >
             <X size={12} />
           </Button>

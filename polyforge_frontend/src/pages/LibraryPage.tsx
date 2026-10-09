@@ -13,6 +13,7 @@ import {
 import { setDetailUid } from '../hooks/useDetailUid';
 import { JobRow } from '../components/library/JobRow';
 import { EmptyState } from '../components/common/EmptyState';
+import { SkeletonCard } from '../components/common/SkeletonRow';
 import { go } from '../router';
 
 const PAGE_SIZE = 20;
@@ -172,6 +173,14 @@ export const LibraryPage: React.FC = () => {
                         onCta={() => go('create')}
                         illustration="mesh"
                     />
+                )}
+
+                {loading && data.items.length === 0 && !error && (
+                    <div role="list" aria-busy="true" aria-label={t('library.loading')}>
+                        {Array.from({ length: 5 }).map((_, i) => (
+                            <SkeletonCard key={i} />
+                        ))}
+                    </div>
                 )}
 
                 <Divider />

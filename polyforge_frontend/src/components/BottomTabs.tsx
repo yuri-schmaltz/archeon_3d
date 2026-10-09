@@ -2,13 +2,14 @@ import React from 'react';
 import { ROUTES, useRoute, go } from '../router';
 import { useT } from '../i18n';
 import { clsx } from 'clsx';
+import { HealthIndicator } from './HealthIndicator';
 
 export const BottomTabs: React.FC = () => {
     const t = useT();
     const current = useRoute();
     return (
         <nav
-            aria-label="Primary"
+            aria-label={t('nav.primaryAriaLabel')}
             className="fixed bottom-0 left-0 right-0 z-40 bg-bg/95 backdrop-blur-sm border-t border-border h-14 flex items-stretch lg:hidden"
         >
             {ROUTES.map((route) => {
@@ -34,6 +35,12 @@ export const BottomTabs: React.FC = () => {
                     </button>
                 );
             })}
+            <span
+                className="absolute top-1.5 right-3"
+                aria-hidden="false"
+            >
+                <HealthIndicator variant="dot" />
+            </span>
         </nav>
     );
 };

@@ -15,10 +15,17 @@ import type { SystemMetrics } from '../api/types';
 
 const POLL_INTERVAL_MS = 4000;
 
+export type SystemMetricsStatus =
+  | 'loading'      // first poll in flight, no data yet
+  | 'live'         // data is fresh
+  | 'error';       // last poll failed
+
 export interface UseSystemMetricsResult {
   metrics: SystemMetrics | null;
   error: string | null;
   loading: boolean;
+  /** Lifecycle status: distinguishes "still loading" from "error" */
+  status: SystemMetricsStatus;
   /** Force a refresh; resets the loading flag. */
   refresh: () => void;
 }
@@ -57,10 +64,17 @@ export function useSystemMetrics(): UseSystemMetricsResult {
     };
   }, [nonce]);
 
+  const status: SystemMetricsStatus = error
+    ? 'error'
+    : loading
+      ? 'loading'
+      : 'live';
+
   return {
     metrics,
     error,
     loading,
+    status,
     refresh: () => {
       setLoading(true);
       setNonce((n) => n + 1);

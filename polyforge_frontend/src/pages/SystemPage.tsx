@@ -135,10 +135,10 @@ export const SystemPage: React.FC = () => {
                 </Text>
                 {stats && (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <Metric label="Em fila" value={stats.queue_depth} />
-                        <Metric label="Memória" value={stats.jobs_in_memory} />
-                        <Metric label="Disco" value={stats.jobs_in_store} />
-                        <Metric label="Histórico" value={stats.max_history} />
+                        <Metric label={t('system.metric.queued')} value={stats.queue_depth} />
+                        <Metric label={t('system.metric.memory')} value={stats.jobs_in_memory} />
+                        <Metric label={t('system.metric.disk')} value={stats.jobs_in_store} />
+                        <Metric label={t('system.metric.history')} value={stats.max_history} />
                     </div>
                 )}
                 {stats && typeof stats.by_status === 'object' && stats.by_status !== null && (
@@ -167,10 +167,10 @@ export const SystemPage: React.FC = () => {
                         disabled={warmupBusy}
                     >
                         {warmupBusy
-                            ? 'Iniciando…'
+                            ? t('system.warmup.busy')
                             : modelStatus?.loaded
-                            ? 'Recarregar modelo'
-                            : 'Carregar modelo agora'}
+                            ? t('system.warmup.reload')
+                            : t('system.warmup.start')}
                     </Button>
                 </div>
 
@@ -181,7 +181,9 @@ export const SystemPage: React.FC = () => {
                     >
                         <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
                             <Pill tone={modelStatus.loaded ? 'accent' : 'muted'}>
-                                {modelStatus.loaded ? '✓ carregado' : '○ não carregado'}
+                                {modelStatus.loaded
+                                    ? t('system.model.loaded')
+                                    : t('system.model.notLoaded')}
                             </Pill>
                             <Text voice="mono" size="xs" tone="muted">
                                 {modelStatus.model}
@@ -190,7 +192,9 @@ export const SystemPage: React.FC = () => {
                             <Pill tone="muted">{modelStatus.device}</Pill>
                             {modelStatus.text_to_image_model && (
                                 <Pill tone={modelStatus.text_to_image_loaded ? 'accent' : 'muted'}>
-                                    {modelStatus.text_to_image_loaded ? '✓ texto-para-imagem' : '○ texto-para-imagem'}
+                                    {modelStatus.text_to_image_loaded
+                                        ? t('system.model.t2i.loaded')
+                                        : t('system.model.t2i.notLoaded')}
                                 </Pill>
                             )}
                             {modelStatus.text_to_image_model && (
@@ -206,7 +210,7 @@ export const SystemPage: React.FC = () => {
                         )}
                         {modelStatus.last_error && (
                             <Pill tone="danger">
-                                Último erro: {modelStatus.last_error}
+                                {t('system.model.lastError', { error: modelStatus.last_error })}
                             </Pill>
                         )}
                     </div>
@@ -236,18 +240,30 @@ export const SystemPage: React.FC = () => {
                 </Text>
                 {capabilities && (
                     <ul className="space-y-2 text-sm">
-                        <LimitRow label="Imagem máxima" value={formatBytes(capabilities.limits.image_bytes)} />
-                        <LimitRow label="Mesh máximo" value={formatBytes(capabilities.limits.mesh_bytes)} />
                         <LimitRow
-                            label="Payload JSON máximo"
+                            label={t('system.limit.image')}
+                            value={formatBytes(capabilities.limits.image_bytes)}
+                        />
+                        <LimitRow
+                            label={t('system.limit.mesh')}
+                            value={formatBytes(capabilities.limits.mesh_bytes)}
+                        />
+                        <LimitRow
+                            label={t('system.limit.body')}
                             value={
                                 capabilities.limits.body_bytes === null
                                     ? t('system.unlimited')
                                     : formatBytes(capabilities.limits.body_bytes)
                             }
                         />
-                        <LimitRow label="Profundidade da fila" value={String(capabilities.limits.queue_depth)} />
-                        <LimitRow label="Versão" value={capabilities.version} />
+                        <LimitRow
+                            label={t('system.limit.queue')}
+                            value={String(capabilities.limits.queue_depth)}
+                        />
+                        <LimitRow
+                            label={t('system.limit.version')}
+                            value={capabilities.version}
+                        />
                     </ul>
                 )}
             </Stack>

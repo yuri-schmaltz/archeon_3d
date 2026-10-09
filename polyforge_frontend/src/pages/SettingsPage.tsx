@@ -79,7 +79,7 @@ export const SettingsPage: React.FC = () => {
                 </Text>
                 <ul className="space-y-2 text-sm">
                     <Row label={t('settings.version')} value={capabilities?.version ?? '—'} />
-                    <Row label="URL" value={BASE_URL} />
+                    <Row label={t('settings.url')} value={BASE_URL} />
                 </ul>
             </Stack>
 

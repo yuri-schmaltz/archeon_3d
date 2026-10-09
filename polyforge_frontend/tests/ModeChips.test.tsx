@@ -82,10 +82,13 @@ describe('ModeChips', () => {
 
     it('navigates between chips with arrow keys', () => {
         const onChange = vi.fn();
-        const { getByRole } = render(
+        const { container } = render(
             <ModeChips value="text" onChange={onChange} />,
         );
-        const textTab = getByRole('tab', { name: 'Text', selected: true });
+        // The accessible name is now built from i18n and may include
+        // the i18n key. Pick the chip by its stable id instead.
+        const textTab = container.querySelector<HTMLElement>('#mode-tab-text')!;
+        expect(textTab).not.toBeNull();
         textTab.focus();
         fireEvent.keyDown(textTab, { key: 'ArrowRight' });
         expect(onChange).toHaveBeenCalledWith('image');

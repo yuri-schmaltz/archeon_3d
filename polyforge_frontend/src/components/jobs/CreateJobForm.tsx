@@ -1,8 +1,19 @@
 /**
  * CreateJobForm — submit a new generation job.
  *
- * Now: i18n-aware, drag-and-drop enabled, and capable of pre-filling
- * from a ?reuse=<uid> query param (used by the Library "Reuse" action).
+ * The form is organised as a 3-step wizard (Mode → Input → Review) using
+ * the ``Stepper`` primitive. Each step has a clear scope:
+ *
+ *   1. **Mode** — pick text / image / multiview / texture, see the
+ *      model-status banner if some modes are unavailable.
+ *   2. **Input** — fill the fields required by the chosen mode
+ *      (prompt, image, multiview, mesh + reference).
+ *   3. **Review** — pick a preset, tweak steps/guidance/seed, and
+ *      submit the job.
+ *
+ * The wizard is *controlled*: the parent owns the current step. We
+ * never advance without a valid input (the ``canSubmit`` predicate
+ * drives both the "Next" gating and the final submit).
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -12,18 +23,18 @@ import { apiClient, errorMessage } from "../../api/client";
 import { useJobEvents } from "../../context/useJobEvents";
 import { useCapabilities, FALLBACK_CAPABILITIES } from "../../api/capabilities";
 import { useT } from "../../i18n";
-import { go } from "../../router";
 
 const DEFAULT_CAPABILITIES = FALLBACK_CAPABILITIES;
 import {
     Stack,
-    Divider,
     Button,
     Field,
     FieldTextarea,
     FieldFile,
     Text,
     Pill,
+    Stepper,
+    type StepperStep,
 } from "../../design/primitives";
 import { ModeChips, type ModeKey } from "./ModeChips";
 
@@ -37,6 +48,10 @@ const VIEW_LABEL: Record<ViewKey, string> = {
     left: 'create.field.left',
     right: 'create.field.right',
 };
+
+const STEP_MODE = 0;
+const STEP_INPUT = 1;
+const STEP_REVIEW = 2;
 
 export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }> = ({
     onModeChange,
@@ -75,6 +90,7 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
         { type: "success" | "error"; text: string } | null
     >(null);
     const [dragOver, setDragOver] = useState<ModeKey | null>(null);
+    const [stepIndex, setStepIndex] = useState<number>(STEP_MODE);
     const formRef = useRef<HTMLFormElement>(null);
 
     // Presets from /v1/capabilities; fall back to the documented values.
@@ -86,16 +102,6 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
             setGuidance(p.guidance);
         }
     };
-
-    // The form no longer auto-switches the user away from an
-    // ``unavailable`` mode: pre-blocking would force the user to
-    // re-pick the mode they actually wanted every time the model
-    // briefly disconnects. Instead the mode chip shows a small
-    // amber dot + tooltip, and the actual job submission surfaces
-    // a clear server-side error.
-    //
-    // (The previous effect lived here; kept this comment as a
-    // marker so future refactors don't reintroduce the auto-flip.)
 
     // Reuse parameters from the library (?reuse=<uid>).
     useEffect(() => {
@@ -208,7 +214,8 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
         setMessage(null);
     }
 
-    const canSubmit = useMemo(() => {
+    // Whether the input step is complete enough to advance.
+    const canAdvanceFromInput = useMemo(() => {
         if (hint === "text") return text.trim().length > 0;
         if (hint === "image") return image !== null;
         if (hint === "multiview") return VIEW_KEYS.every((k) => views[k] !== null);
@@ -216,15 +223,42 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
         return false;
     }, [hint, text, texturePrompt, image, views, mesh, refImage]);
 
-    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
+    // Whether the final submit can run.
+    const canSubmit = useMemo(() => {
+        const advancedValid =
+            Number.isInteger(steps) && steps >= 1 && steps <= 100 &&
+            Number.isFinite(guidance) && guidance >= 1 && guidance <= 20 &&
+            Number.isSafeInteger(seed);
+        return canAdvanceFromInput && advancedValid;
+    }, [canAdvanceFromInput, steps, guidance, seed]);
+
+    const goToStep = (next: number) => {
+        if (next < 0) return;
+        if (next > STEP_REVIEW) return;
+        setStepIndex(next);
+    };
+
+    const handleNext = () => {
+        if (stepIndex === STEP_MODE) {
+            setStepIndex(STEP_INPUT);
+            return true;
+        }
+        if (stepIndex === STEP_INPUT) {
+            if (!canAdvanceFromInput) {
+                setMessage({ type: "error", text: t('stepper.create.invalid') });
+                return false;
+            }
+            setStepIndex(STEP_REVIEW);
+            return true;
+        }
+        return true;
+    };
+
+    const doSubmit = async () => {
         if (!canSubmit || isSubmitting) return;
         setIsSubmitting(true);
         setMessage(null);
         try {
-            if (!Number.isInteger(steps) || steps < 1 || steps > 100
-                || !Number.isFinite(guidance) || guidance < 1 || guidance > 20
-                || !Number.isSafeInteger(seed)) throw new Error("Check the advanced settings.");
             const payload = await buildGenerationRequest(hint,
                 { text, texturePrompt, image, views, mesh, refImage },
                 { steps, guidance, seed, texture });
@@ -236,6 +270,7 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
             if (hint === "image") setImage(null);
             if (hint === "multiview") setViews({ front: null, back: null, left: null, right: null });
             if (hint === "texture") { setMesh(null); setRefImage(null); setTexturePrompt(""); }
+            setStepIndex(STEP_MODE);
         } catch (err) {
             setMessage({ type: "error", text: errorMessage(err) });
         } finally {
@@ -243,12 +278,70 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
         }
     };
 
+    const steps_: StepperStep[] = useMemo(() => [
+        {
+            id: "mode",
+            eyebrow: t("create.mode.text"),
+            title: t("stepper.create.input.title"),
+            hint: t(`create.mode.${hint}.hint`) || undefined,
+        },
+        {
+            id: "input",
+            eyebrow: t("create.advanced"),
+            title: t("stepper.create.input.title"),
+            hint: t("stepper.create.input.hint"),
+        },
+        {
+            id: "review",
+            eyebrow: t("nav.create"),
+            title: t("stepper.create.review.title"),
+            hint: t("stepper.create.review.hint"),
+        },
+    ], [t, hint]);
+
     return (
-        <form id="create-job" ref={formRef} className="bg-bg" onSubmit={handleSubmit}>
-            <fieldset disabled={isSubmitting} className="min-w-0">
-                {/* Header row */}
-                <div className="flex flex-wrap items-center justify-between gap-4 pb-3">
-                    <Stack gap={1}>
+        <form id="create-job" ref={formRef} className="bg-bg" onSubmit={(e) => e.preventDefault()}>
+            <Stepper
+                steps={steps_}
+                current={stepIndex}
+                onNext={handleNext}
+                onBack={() => goToStep(stepIndex - 1)}
+                nextLabel={t("common.next")}
+                backLabel={t("common.back")}
+                submitLabel={isSubmitting ? t("create.submit.busy") : t("create.submit")}
+                onSubmit={doSubmit}
+                nextDisabled={stepIndex === STEP_INPUT && !canAdvanceFromInput}
+                submitting={isSubmitting}
+                footer={
+                    <>
+                        {/* Model status banner — visible only when at least one
+                            backend mode is unavailable. We keep the form fully
+                            interactive (the user can still pick a mode and type
+                            their prompt) and surface the real error from the
+                            server at submit time. */}
+                        {Object.values(capabilities.modes).some((m) => m.available === false) && (
+                            <div
+                                role="status"
+                                data-testid="model-status-banner"
+                                className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90"
+                            >
+                                {t("create.banner.modelNotLoaded")}
+                            </div>
+                        )}
+
+                        {/* Inline message — shown on every step so the user
+                            sees validation feedback even before the submit. */}
+                        {message && (
+                            <Pill tone={message.type === "success" ? "success" : "danger"}>
+                                {message.text}
+                            </Pill>
+                        )}
+                    </>
+                }
+            >
+                {/* Step 1: Mode + capability. */}
+                {stepIndex === STEP_MODE && (
+                    <Stack gap={4}>
                         <Text
                             voice="mono"
                             size="2xs"
@@ -256,142 +349,132 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
                             tracking="widest"
                             uppercase
                         >
-                            {t('nav.create')}
+                            {t("create.mode.text")}
                         </Text>
+                        <ModeChips
+                            value={hint}
+                            onChange={(mode) => { setHint(mode); setMessage(null); }}
+                            availability={capabilities.modes}
+                        />
                     </Stack>
-                    <Button
-                        type="submit"
-                        variant="primary"
-                        size="md"
-                        disabled={!canSubmit || isSubmitting}
-                    >
-                        {isSubmitting ? t('create.submit.busy') : t('create.submit')}
-                    </Button>
-                </div>
-                <Divider />
+                )}
 
-                {/* Model status banner — visible only when at least one
-                    backend mode is unavailable. We keep the form fully
-                    interactive (the user can still pick a mode and type
-                    their prompt) and surface the real error from the
-                    server at submit time. */}
-                {Object.values(capabilities.modes).some((m) => m.available === false) && (
-                    <div
-                        role="status"
-                        data-testid="model-status-banner"
-                        className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90"
-                    >
-                        {t('create.banner.modelNotLoaded')}
+                {/* Step 2: Mode-specific input. */}
+                {stepIndex === STEP_INPUT && (
+                    <div className="space-y-4">
+                        <Text
+                            voice="mono"
+                            size="2xs"
+                            tone="muted"
+                            tracking="widest"
+                            uppercase
+                        >
+                            {t(`create.mode.${hint}`)}
+                        </Text>
+                        <AnimatePresence mode="wait">
+                            <motion.div
+                                key={hint}
+                                role="tabpanel"
+                                id={`mode-panel-${hint}`}
+                                aria-labelledby={`mode-tab-${hint}`}
+                                initial={{ opacity: 0, y: 4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -4 }}
+                                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
+                            >
+                                {hint === "text" && (
+                                    <FieldTextarea
+                                        label={t('create.field.prompt')}
+                                        hint={t('create.field.prompt.hint')}
+                                        value={text}
+                                        onChange={(e) => setText(e.target.value)}
+                                        rows={4}
+                                        autoFocus
+                                    />
+                                )}
+                                {hint === "image" && (
+                                    <Stack gap={3}>
+                                        <DropZone
+                                            mode="image"
+                                            label={t('create.field.image')}
+                                            hint={t('create.field.image.hint')}
+                                            preview={imagePreview}
+                                            dragOver={dragOver === 'image'}
+                                            onPick={handleImagePick}
+                                            onDrop={(files) => handleDrop('image', files)}
+                                            onEnter={() => setDragOver('image')}
+                                            onLeave={() => setDragOver(null)}
+                                        />
+                                    </Stack>
+                                )}
+                                {hint === "multiview" && (
+                                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                        {VIEW_KEYS.map((key) => (
+                                            <DropZone
+                                                key={key}
+                                                mode="multiview"
+                                                label={t(VIEW_LABEL[key])}
+                                                hint=""
+                                                preview={viewPreviews[key]}
+                                                dragOver={dragOver === key as unknown as ModeKey}
+                                                onPick={handleViewPick(key)}
+                                                onDrop={(files) => handleDrop('multiview', files)}
+                                                onEnter={() => setDragOver(key as unknown as ModeKey)}
+                                                onLeave={() => setDragOver(null)}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                                {hint === "texture" && (
+                                    <Stack gap={4}>
+                                        <FieldFile
+                                            label={t('create.field.mesh')}
+                                            accept=".glb"
+                                            onChange={handleMeshPick}
+                                            filename={mesh?.name}
+                                        />
+                                        <FieldTextarea
+                                            label={t('create.field.texturePrompt')}
+                                            hint={t('create.field.texturePrompt.hint')}
+                                            value={texturePrompt}
+                                            onChange={(e) => setTexturePrompt(e.target.value)}
+                                            rows={3}
+                                        />
+                                        <DropZone
+                                            mode="texture"
+                                            label={t('create.field.refImage')}
+                                            hint={t('create.field.image.hint')}
+                                            preview={refPreview}
+                                            dragOver={dragOver === 'texture'}
+                                            onPick={handleRefPick}
+                                            onDrop={(files) => handleDrop('texture', files)}
+                                            onEnter={() => setDragOver('texture')}
+                                            onLeave={() => setDragOver(null)}
+                                        />
+                                    </Stack>
+                                )}
+                            </motion.div>
+                        </AnimatePresence>
                     </div>
                 )}
 
-                {/* Mode tabs */}
-                <ModeChips
-                    value={hint}
-                    onChange={(mode) => { setHint(mode); setMessage(null); }}
-                    availability={capabilities.modes}
-                />
-
-                {/* Mode-specific input area */}
-                <div className="py-5">
-                    <AnimatePresence mode="wait">
-                        <motion.div
-                            key={hint}
-                            role="tabpanel"
-                            id={`mode-panel-${hint}`}
-                            aria-labelledby={`mode-tab-${hint}`}
-                            initial={{ opacity: 0, y: 4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -4 }}
-                            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
+                {/* Step 3: Review and tweak. */}
+                {stepIndex === STEP_REVIEW && (
+                    <div className="space-y-6">
+                        <Text
+                            voice="mono"
+                            size="2xs"
+                            tone="muted"
+                            tracking="widest"
+                            uppercase
                         >
-                            {hint === "text" && (
-                                <FieldTextarea
-                                    label={t('create.field.prompt')}
-                                    hint={t('create.field.prompt.hint')}
-                                    value={text}
-                                    onChange={(e) => setText(e.target.value)}
-                                    rows={4}
-                                    autoFocus
-                                />
-                            )}
-                            {hint === "image" && (
-                                <Stack gap={3}>
-                                    <DropZone
-                                        mode="image"
-                                        label={t('create.field.image')}
-                                        hint={t('create.field.image.hint')}
-                                        preview={imagePreview}
-                                        dragOver={dragOver === 'image'}
-                                        onPick={handleImagePick}
-                                        onDrop={(files) => handleDrop('image', files)}
-                                        onEnter={() => setDragOver('image')}
-                                        onLeave={() => setDragOver(null)}
-                                    />
-                                </Stack>
-                            )}
-                            {hint === "multiview" && (
-                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                                    {VIEW_KEYS.map((key) => (
-                                        <DropZone
-                                            key={key}
-                                            mode="multiview"
-                                            label={t(VIEW_LABEL[key])}
-                                            hint=""
-                                            preview={viewPreviews[key]}
-                                            dragOver={dragOver === key as unknown as ModeKey}
-                                            onPick={handleViewPick(key)}
-                                            onDrop={(files) => handleDrop('multiview', files)}
-                                            onEnter={() => setDragOver(key as unknown as ModeKey)}
-                                            onLeave={() => setDragOver(null)}
-                                        />
-                                    ))}
-                                </div>
-                            )}
-                            {hint === "texture" && (
-                                <Stack gap={4}>
-                                    <FieldFile
-                                        label={t('create.field.mesh')}
-                                        accept=".glb"
-                                        onChange={handleMeshPick}
-                                        filename={mesh?.name}
-                                    />
-                                    <FieldTextarea
-                                        label={t('create.field.texturePrompt')}
-                                        hint={t('create.field.texturePrompt.hint')}
-                                        value={texturePrompt}
-                                        onChange={(e) => setTexturePrompt(e.target.value)}
-                                        rows={3}
-                                    />
-                                    <DropZone
-                                        mode="texture"
-                                        label={t('create.field.refImage')}
-                                        hint={t('create.field.image.hint')}
-                                        preview={refPreview}
-                                        dragOver={dragOver === 'texture'}
-                                        onPick={handleRefPick}
-                                        onDrop={(files) => handleDrop('texture', files)}
-                                        onEnter={() => setDragOver('texture')}
-                                        onLeave={() => setDragOver(null)}
-                                    />
-                                </Stack>
-                            )}
-                        </motion.div>
-                    </AnimatePresence>
-                </div>
-                <Divider />
-
-                {/* Preset + advanced */}
-                <details className="py-3">
-                    <summary className="cursor-pointer text-fg-muted hover:text-fg text-sm font-mono uppercase tracking-wider">
-                        {t('create.advanced')}
-                    </summary>
-                    <div className="pt-4 space-y-4">
+                            {t("create.advanced")}
+                        </Text>
                         <div className="flex flex-wrap gap-2">
                             {(['fast', 'balanced', 'detailed'] as const).map((key) => {
                                 const measured = presets[key]?.expected_elapsed_s;
                                 const calibrated = presets[key]?.calibrated_on;
-                                const hint = measured
+                                const hintText = measured
                                     ? `≈ ${Math.max(1, Math.round(measured))}s${calibrated ? ` @ ${calibrated}` : ''}`
                                     : null;
                                 return (
@@ -401,13 +484,13 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
                                         size="sm"
                                         type="button"
                                         onClick={() => applyPreset(key)}
-                                        title={hint ?? undefined}
+                                        title={hintText ?? undefined}
                                     >
                                         <span className="flex flex-col items-start leading-tight">
                                             <span>{t(`create.preset.${key}`)}</span>
-                                            {hint && (
+                                            {hintText && (
                                                 <span className="text-2xs font-mono opacity-70">
-                                                    {hint}
+                                                    {hintText}
                                                 </span>
                                             )}
                                         </span>
@@ -449,33 +532,12 @@ export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }>
                                 <span className="text-sm">{t('create.texture')}</span>
                             </label>
                         </div>
+                        <Text voice="body" size="sm" tone="muted" className="leading-snug">
+                            {t("stepper.create.submit.hint")}
+                        </Text>
                     </div>
-                </details>
-            </fieldset>
-
-            {/* Inline message */}
-            <div className="min-h-6 pt-4">
-                {message && (
-                    <Pill tone={message.type === 'success' ? 'success' : 'danger'}>
-                        {message.text}
-                    </Pill>
                 )}
-            </div>
-
-            {/* Footer actions */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-border">
-                <Button variant="ghost" size="sm" type="button" onClick={() => go('library')}>
-                    {t('nav.library')} →
-                </Button>
-                <Button
-                    type="submit"
-                    variant="primary"
-                    size="md"
-                    disabled={!canSubmit || isSubmitting}
-                >
-                    {isSubmitting ? t('create.submit.busy') : t('create.submit')}
-                </Button>
-            </div>
+            </Stepper>
         </form>
     );
 };

@@ -11,7 +11,7 @@ export const LeftRail: React.FC = () => {
     const current = useRoute();
     return (
         <aside className="hidden lg:flex w-64 shrink-0 border-r border-border bg-bg flex-col overflow-y-auto">
-            <nav aria-label="Primary" className="px-3 py-3">
+            <nav aria-label={t('nav.primaryAriaLabel')} className="px-3 py-3">
                 <Stack gap={1}>
                     {ROUTES.map((route) => {
                         const active = route.id === current;
@@ -23,7 +23,7 @@ export const LeftRail: React.FC = () => {
                                 aria-current={active ? 'page' : undefined}
                                 className={clsx(
                                     'flex items-center gap-3 px-3 h-9 text-left rounded-sm',
-                                    'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent',
+                                    'focus-visible:ring-1 focus-visible:ring-accent',
                                     active
                                         ? 'bg-surface-2 text-fg'
                                         : 'text-fg-muted hover:text-fg hover:bg-surface-1',
@@ -56,7 +56,7 @@ export const LeftRail: React.FC = () => {
                         tracking="widest"
                         uppercase
                     >
-                        {t('system.metrics')}
+                        {t('leftrail.systemHeading')}
                     </Text>
                 </Stack>
             </div>
@@ -75,12 +75,24 @@ export const LeftRail: React.FC = () => {
                         tracking="widest"
                         uppercase
                     >
-                        {t('settings.server')}
+                        {t('leftrail.serverHeading')}
                     </Text>
-                    <a href={`${BASE_URL}/docs`} target="_blank" rel="noreferrer"
-                        className="text-sm text-fg-muted hover:text-fg py-2">API →</a>
-                    <a href={`${BASE_URL}/openapi.json`} target="_blank" rel="noreferrer"
-                        className="text-sm text-fg-muted hover:text-fg py-2">OpenAPI →</a>
+                    <a
+                        href={`${BASE_URL}/docs`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-fg-muted hover:text-fg py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent rounded-sm"
+                    >
+                        {t('leftrail.docs')} →
+                    </a>
+                    <a
+                        href={`${BASE_URL}/openapi.json`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-fg-muted hover:text-fg py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent rounded-sm"
+                    >
+                        {t('leftrail.openApi')} →
+                    </a>
                     <Button variant="secondary" size="sm" block onClick={() => {
                         const form = document.getElementById("create-job");
                         form?.scrollIntoView({ block: "start" });
