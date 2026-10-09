@@ -170,12 +170,14 @@ class TestGetApiKey:
 # ---------------------------------------------------------------------------
 
 class TestCorsOrigins:
-    def test_default_is_wildcard(self, monkeypatch):
+    def test_default_is_wildcard(self, monkeypatch, tmp_path):
+        # The settings class reads from .env at the project root. Build
+        # a fresh Settings instance with _env_file=None so the test is
+        # hermetic — the singleton on the module is not consulted.
         monkeypatch.delenv("POLYFORGE_CORS_ORIGINS", raising=False)
         from hy3dgen.api import config as config_module
-        import importlib
-        importlib.reload(config_module)
-        assert config_module.get_cors_origins() == ["*"]
+        fresh = config_module.Settings(_env_file=None)
+        assert fresh.cors_origins_list == ["*"]
 
     def test_explicit_list(self, monkeypatch):
         monkeypatch.setenv(

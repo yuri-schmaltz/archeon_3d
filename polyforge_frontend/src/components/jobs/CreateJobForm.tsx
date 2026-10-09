@@ -38,11 +38,17 @@ const VIEW_LABEL: Record<ViewKey, string> = {
     right: 'create.field.right',
 };
 
-export const CreateJobForm: React.FC = () => {
+export const CreateJobForm: React.FC<{ onModeChange?: (mode: ModeKey) => void }> = ({
+    onModeChange,
+}) => {
     const t = useT();
     const { capabilities } = useCapabilities();
     const { notifyJobSubmitted } = useJobEvents();
-    const [hint, setHint] = useState<ModeKey>("text");
+    const [hint, setHintInternal] = useState<ModeKey>("text");
+    const setHint = (mode: ModeKey) => {
+        setHintInternal(mode);
+        onModeChange?.(mode);
+    };
     const [text, setText] = useState("");
     const [texturePrompt, setTexturePrompt] = useState("");
     const [image, setImage] = useState<File | null>(null);
@@ -114,6 +120,9 @@ export const CreateJobForm: React.FC = () => {
                 setMessage({ type: 'error', text: errorMessage(err) });
             }
         })();
+        // setHint is stable for the lifetime of this component; intentionally
+        // excluded from deps to avoid re-firing when the parent re-renders.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const setImageFile = setImage;

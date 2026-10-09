@@ -11,3 +11,11 @@
 # optimizer states), machine-learning model code, inference-enabling code, training-enabling code,
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
+
+# .env loading is opt-in. Entry points (CLI, server, launcher) call
+# ``hy3dgen.env.bootstrap()`` early; library callers and tests can call
+# it manually if they want to load the project .env. The default
+# behaviour is hermetic (no .env).
+from . import env as env  # noqa: F401
+
+__all__ = ["env"]

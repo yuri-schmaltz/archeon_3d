@@ -21,7 +21,7 @@ export const BottomTabs: React.FC = () => {
                         aria-current={active ? 'page' : undefined}
                         className={clsx(
                             'flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5',
-                            'focus:outline-none focus-visible:text-accent',
+                            'focus-visible:text-accent',
                             active ? 'text-accent' : 'text-fg-muted hover:text-fg',
                         )}
                     >

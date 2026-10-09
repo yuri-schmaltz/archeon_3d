@@ -98,12 +98,28 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="POLYFORGE_",
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
         populate_by_name=True,
     )
+
+    def __init__(self, **kwargs: object) -> None:
+        # Opt-in .env loading: the project ships a ``.env.example`` but the
+        # ``.env`` file itself is gitignored. We only read it when the
+        # process is started with ``POLYFORGE_LOAD_DOTENV=1`` (the launcher
+        # and the entry point set it). Tests run with the env var unset,
+        # so a stray ``.env`` in the working directory cannot leak values
+        # into ``Settings()`` and break hermetic assertions.
+        #
+        # Callers that want to bypass the flag (e.g. the conftest's
+        # ``_restore_api_settings`` or the explicit ``Settings(_env_file=None)``
+        # in the CORS test) get hermetic defaults.
+        if "_env_file" not in kwargs and "env_file" not in kwargs:
+            if os.environ.get("POLYFORGE_LOAD_DOTENV") == "1":
+                kwargs["_env_file"] = ".env"
+        super().__init__(**kwargs)
 
     # -- Server bind ----------------------------------------------------
     # Every field reads its ``POLYFORGE_<NAME>`` env var (upper-cased

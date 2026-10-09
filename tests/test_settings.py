@@ -62,6 +62,9 @@ class TestSettingsEnvOverrides:
         """A bogus env var does not crash the import; settings falls back to defaults."""
         monkeypatch.setenv("POLYFORGE_LOG_LEVEL", "bogus")
         cfg = reload_config()
+        # Reload re-executes the module body, which wraps the ``Settings()``
+        # call in a try/except. The reload's singleton therefore falls back
+        # to all defaults.
         assert cfg.settings.log_level == "INFO"
 
     def test_bad_device_falls_back_on_import(self, monkeypatch, reload_config):

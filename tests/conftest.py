@@ -14,23 +14,47 @@ DEMO_DB = "/tmp/polyforge-stress.db"
 
 
 @pytest.fixture(autouse=True)
-def _restore_api_settings():
-    """Rebuild the API Settings singleton after every test.
+def _restore_api_settings(monkeypatch):
+    """Rebuild the API Settings singleton for every test.
 
     Several legacy tests ``importlib.reload(hy3dgen.api.config)`` with
     monkeypatched env vars, which permanently replaces
     ``config.settings`` for later tests. Reconstructing it here keeps
     Settings-backed behaviour hermetic without touching those tests.
+
+    We also force ``POLYFORGE_LOAD_DOTENV=0`` (off) at the start of
+    every test, so a stray ``.env`` in the working directory cannot
+    leak values into ``Settings()`` and break hermetic assertions. The
+    value is restored after the test.
     """
     from hy3dgen.api import config as config_module
 
     original_hf_home = os.environ.get("HF_HOME")
+    original_load_dotenv = os.environ.get("POLYFORGE_LOAD_DOTENV")
+    # Force the flag off before any test code runs, so a previous test
+    # that imported hy3dgen.api.server cannot leak the value here.
+    monkeypatch.setenv("POLYFORGE_LOAD_DOTENV", "0")
     yield
-    config_module.settings = config_module.Settings(_env_file=None)
+    # Strip every POLYFORGE_ env var the test set so the post-test
+    # ``Settings(_env_file=None)`` call below sees a clean slate. We
+    # restore the original values afterwards.
+    keys_added_by_test = [
+        k for k in os.environ
+        if k.startswith("POLYFORGE_") and k not in (original_load_dotenv,)
+    ]
+    saved = {k: os.environ.pop(k) for k in keys_added_by_test}
+    try:
+        config_module.settings = config_module.Settings(_env_file=None)
+    finally:
+        os.environ.update(saved)
     if original_hf_home is None:
         os.environ.pop("HF_HOME", None)
     else:
         os.environ["HF_HOME"] = original_hf_home
+    if original_load_dotenv is None:
+        os.environ.pop("POLYFORGE_LOAD_DOTENV", None)
+    else:
+        os.environ["POLYFORGE_LOAD_DOTENV"] = original_load_dotenv
 
 
 def _wait_for_server(url: str, timeout: float = 30.0) -> bool:

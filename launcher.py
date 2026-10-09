@@ -31,6 +31,7 @@ import trimesh
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from mmgp import offload
 import uuid
 from hy3dgen.monitoring import get_system_metrics
@@ -1043,6 +1044,15 @@ def main():
 
     # --- Fast Initialization ---
     app = FastAPI()
+
+    # Enable CORS for frontend communication
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     async def health_check():

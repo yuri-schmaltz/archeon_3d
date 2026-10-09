@@ -147,11 +147,21 @@ async def test_10k_list_endpoint(_10k_server):
     repo_root = Path(__file__).resolve().parent.parent
 
     env = os.environ.copy()
+    # Force .env loading OFF so a stray .env in the working directory
+    # cannot override our explicit env vars (the previous bug we fixed).
+    env["POLYFORGE_LOAD_DOTENV"] = "0"
     env["POLYFORGE_JOB_DB"] = _10k_server["db"]
     env["POLYFORGE_HOST"] = "127.0.0.1"
     env["POLYFORGE_PORT"] = "8767"
     env["POLYFORGE_LOG_LEVEL"] = "error"
     env["POLYFORGE_RATE_LIMIT"] = "false"
+    # The seed spans 30 days of ``age``; with the default
+    # ``max_age_seconds=86400`` the manager would prune most of them on
+    # startup and the test would see ~1k jobs instead of 10k. Disable
+    # the eviction pass for this stress test.
+    env["POLYFORGE_MAX_AGE_SECONDS"] = str(365 * 24 * 3600)
+    env["POLYFORGE_MAX_HISTORY"] = "20000"
+    env["POLYFORGE_PYTHONPATH"] = str(repo_root)
     env["PYTHONPATH"] = str(repo_root)
 
     proc = subprocess.Popen(
@@ -200,9 +210,13 @@ async def test_10k_list_endpoint(_10k_server):
 
             # The whole history is reachable: /library reports the full
             # count from the store without materialising every job.
+            h = await client.get("/health")
+            print(f"[10k health] {h.json()}")
             lib = await client.get("/v1/library", params={"page_size": 1})
             assert lib.status_code == 200
-            assert lib.json()["total"] == 10_000
+            lib_json = lib.json()
+            print(f"[10k library] total={lib_json.get('total')} items={len(lib_json.get('items', []))}")
+            assert lib_json["total"] == 10_000, f"expected 10k total, got {lib_json.get('total')}"
     finally:
         proc.terminate()
         try:

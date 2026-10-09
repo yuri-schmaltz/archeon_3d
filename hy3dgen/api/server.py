@@ -4,6 +4,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Enable .env loading for the server entry point. The hy3dgen package
+# defaults to POLYFORGE_LOAD_DOTENV=0 so library callers and tests get
+# hermetic settings. Server processes opt back in here.
+from hy3dgen import env as _env
+
+_env.bootstrap()
+
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse

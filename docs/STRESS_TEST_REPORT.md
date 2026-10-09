@@ -109,3 +109,40 @@ backend latencies and a sub-second UI render. The lab-instrument
 redesign (PR #11) scales without modification. One latent route-order
 bug was discovered and documented for a follow-up PR; no production
 fix needed for the current 23-job seed in PR #11.
+
+## 7. Resumo das Propostas Adicionadas ao Relatório
+
+### Visualização de Modelos
+
+| Prioridade | Proposta | Impacto | Status |
+|---|---|---|---|
+| **Alta** | Toggle Appearance/Geometry no `MeshPreview` | Usuário pode inspecionar geometria vs textura | ✅ **Implementado** |
+| **Alta** | Expor environment map controls | Melhor qualidade visual na pré-visualização | ✅ **Implementado** |
+| **Média** | Overlay de hint de controles de câmera | Reduz curva de aprendizado | ✅ **Implementado** |
+| **Média** | Wireframe mode | Útil para makers e devs | ✅ **Implementado** |
+| **Média** | Background options | Melhoria estética e contexto | ✅ **Implementado** |
+| **Baixa** | AR quick access button | Funcionalidade avançada para mobile | ✅ **Implementado** |
+
+### Detalhes da implementação
+
+Todas as 6 propostas foram consolidadas no componente
+`polyforge_frontend/src/components/jobs/MeshPreview.tsx` como controles
+inline no canto superior esquerdo do viewport. O componente mantém um
+`ViewerMode` state machine (`textured` / `geometry` / `wireframe`) que:
+
+- Em modo **textured**: restaura as texturas originais do GLB e usa
+  `environmentImage="neutral"` (PBR neutro).
+- Em modo **geometry**: salva as texturas em `materialStateRef`, aplica
+  `setTexture(null)` em todos os materiais e eleva `exposure` para
+  destacar o relief da malha.
+- Em modo **wireframe**: força `metallicFactor=0` e `roughnessFactor=1`
+  em todos os materiais, dando um visual técnico de protótipo.
+
+O overlay de hints (`showHints`) é auto-dismiss após a primeira
+interação (`camera-change`) e respeita `prefers-reduced-motion`. O
+botão AR só aparece quando `canLoadAR`/`activateAR` está disponível no
+elemento `model-viewer`.
+
+**Validação de tipo:** `npx tsc --noEmit` passa sem erros.
+**Runtime:** componente integrado em `JobDetail.tsx` para qualquer
+`JobResponse` com `result_mesh_url`.

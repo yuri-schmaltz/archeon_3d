@@ -52,6 +52,8 @@ export interface TextProps {
   as?: keyof React.JSX.IntrinsicElements;
   className?: string;
   id?: string;
+  title?: string;
+  role?: string;
   children: React.ReactNode;
 }
 
@@ -72,10 +74,14 @@ export const Text: React.FC<TextProps> = ({
   as: As = "span",
   className,
   id,
+  title,
+  role,
   children,
 }) => (
   <As
     id={id}
+    title={title}
+    role={role}
     className={clsx(
       voiceClass[voice],
       sizeClass[size],

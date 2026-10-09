@@ -195,11 +195,18 @@ async def test_notifications_capture_each_transition():
     manager = PriorityRequestManager(device="cpu")
     manager.jobs["job"] = JobResponse(uid="job", status=JobStatus.QUEUED, created_at=utc_now())
     queue = await manager.subscribe("job")
+    # subscribe() primes the queue with the current snapshot. The two
+    # following _notify() calls each drain the queue (maxsize=1) and
+    # publish the next state, so the consumer sees QUEUED, PROCESSING,
+    # and COMPLETED in order.
     manager.jobs["job"].status = JobStatus.PROCESSING
     manager._notify(manager.jobs["job"])
     manager.jobs["job"].status = JobStatus.COMPLETED
     manager._notify(manager.jobs["job"])
-    assert [queue.get_nowait().status for _ in range(3)] == [
+    statuses: list[str] = []
+    for _ in range(3):
+        statuses.append(queue.get_nowait().status)
+    assert statuses == [
         JobStatus.QUEUED,
         JobStatus.PROCESSING,
         JobStatus.COMPLETED,

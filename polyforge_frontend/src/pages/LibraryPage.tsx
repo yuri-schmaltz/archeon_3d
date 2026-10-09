@@ -12,6 +12,7 @@ import {
 } from '../design/primitives';
 import { setDetailUid } from '../hooks/useDetailUid';
 import { JobRow } from '../components/library/JobRow';
+import { EmptyState } from '../components/common/EmptyState';
 import { go } from '../router';
 
 const PAGE_SIZE = 20;
@@ -163,16 +164,14 @@ export const LibraryPage: React.FC = () => {
                 )}
 
                 {data.items.length === 0 && !loading && !error && (
-                    <div className="py-12 text-center text-fg-muted">
-                        <Text voice="body" size="sm">
-                            {t('library.empty')}
-                        </Text>
-                        <div className="mt-4">
-                            <Button variant="ghost" size="sm" onClick={() => go('create')}>
-                                +
-                            </Button>
-                        </div>
-                    </div>
+                    <EmptyState
+                        eyebrow={t('app.title')}
+                        title={t('library.empty.title')}
+                        body={t('library.empty.body')}
+                        ctaLabel={t('library.empty.cta')}
+                        onCta={() => go('create')}
+                        illustration="mesh"
+                    />
                 )}
 
                 <Divider />

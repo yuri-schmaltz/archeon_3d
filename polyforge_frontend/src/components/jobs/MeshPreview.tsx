@@ -193,27 +193,28 @@ export const MeshPreview: React.FC<MeshPreviewProps> = ({
 
     const handleEnvironmentChange = useCallback((env: Environment) => {
         setEnvironment(env);
-        if (viewerRef.current) {
+        const viewer = getModelViewer(viewerRef.current);
+        if (viewer) {
             const envMap: Record<Environment, string> = {
                 neutral: 'neutral',
                 studio: 'neutral', // Uses model-viewer's built-in neutral environment
                 outdoor: 'neutral', // Uses model-viewer's built-in neutral environment
                 custom: '/env_maps/gradient.jpg',
             };
-            (viewerRef.current as any).environmentImage = envMap[env];
+            viewer.environmentImage = envMap[env];
         }
     }, []);
 
     const handleAr = useCallback(() => {
-        if (viewerRef.current) {
-            (viewerRef.current as any).activateAR?.();
-        }
+        const viewer = getModelViewer(viewerRef.current);
+        viewer?.activateAR?.();
     }, []);
 
     const handleResetCamera = useCallback(() => {
-        if (viewerRef.current) {
-            (viewerRef.current as any).cameraOrbit = '0deg 90deg 12m';
-            (viewerRef.current as any).cameraTarget = '0m 0m 0m';
+        const viewer = getModelViewer(viewerRef.current);
+        if (viewer) {
+            viewer.cameraOrbit = '0deg 90deg 12m';
+            viewer.cameraTarget = '0m 0m 0m';
         }
     }, []);
 

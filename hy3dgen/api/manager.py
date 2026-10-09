@@ -1102,7 +1102,11 @@ class PriorityRequestManager:
         queue is the current job state (so consumers don't have to
         separately fetch it).
         """
-        q: asyncio.Queue = asyncio.Queue(maxsize=1)
+        # Bounded buffer so a slow consumer can't be OOM'd. 64 transitions
+        # is far more than any real job will ever emit; if the consumer
+        # falls further behind, ``_notify`` will start dropping the oldest
+        # entry to make room.
+        q: asyncio.Queue = asyncio.Queue(maxsize=64)
         with self._subs_lock:
             self._subscribers.setdefault(uid, []).append(q)
         # Prime the queue with the current state so the consumer has it
