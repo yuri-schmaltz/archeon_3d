@@ -257,46 +257,195 @@ if [[ "${POLYFORGE_NO_FRONTEND:-}" != "1" ]]; then
 fi
 
 # --- 2. pick a supported Python ----------------------------------------------
+# Returns 0 when $1 is an executable Python whose version is 3.10–3.12.
+# Accepts both bare commands (resolved via PATH) and absolute paths.
 python_in_range() {
     local candidate="$1" version major minor
-    command -v "$candidate" >/dev/null 2>&1 || return 1
+    if [[ "$candidate" == */* ]]; then
+        [[ -x "$candidate" ]] || return 1
+    else
+        command -v "$candidate" >/dev/null 2>&1 || return 1
+    fi
     version="$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || return 1
     major="${version%%.*}"
     minor="${version##*.}"
     (( major == 3 && minor >= 10 && minor <= 12 ))
 }
 
+# Build an ordered candidate list of Python 3.10–3.12 interpreters from
+# the most common install locations, in addition to whatever is on PATH.
+# This lets `./launcher.sh` work zero-config on machines where Python is
+# only present in uv / pyenv / system dirs / Flatpak sandboxes instead
+# of as a `python3.12` shim.
+#
+# Strategy: discover all candidates across every source, then sort by
+# version descending so Python 3.12 is preferred over 3.11 over 3.10
+# regardless of which install location it came from. The first hit wins.
+discover_python_candidates() {
+    local p raw
+    # 1. PATH first (respects user preference, virtualenv activation, etc.).
+    for p in python3.12 python3.11 python3.10 python3; do
+        printf '%s\n' "$p"
+    done
+    # 2. uv-managed installs (most common on dev workstations).
+    if [[ -d "$HOME/.local/share/uv/python" ]]; then
+        find "$HOME/.local/share/uv/python" -maxdepth 3 -type f -name 'python3.1[02]' 2>/dev/null
+    fi
+    # 3. uv tool shims and python-builds under ~/.local/bin.
+    if [[ -d "$HOME/.local/bin" ]]; then
+        find "$HOME/.local/bin" -maxdepth 1 \( -type l -o -type f \) -name 'python3.1[02]' 2>/dev/null
+    fi
+    # 4. pyenv (PYENV_ROOT or default location).
+    local pyenv_root="${PYENV_ROOT:-$HOME/.pyenv}"
+    if [[ -d "$pyenv_root/versions" ]]; then
+        find "$pyenv_root/versions" -maxdepth 2 -type f -name 'python3.1[02]' 2>/dev/null
+    fi
+    # 5. Standard system locations.
+    for p in /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3.10 \
+             /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.10 \
+             /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3.10; do
+        [[ -e "$p" ]] && printf '%s\n' "$p"
+    done
+    # 6. Flatpak app sandboxes (e.g. python interpreters shipped with VS Code).
+    if [[ -d "$HOME/.var/app" ]]; then
+        find "$HOME/.var/app" -maxdepth 8 -type f -name 'python3.1[02]' 2>/dev/null
+    fi
+}
+
+# Tag every candidate with its minor version (3.10/3.11/3.12) and sort
+# descending so newer interpreters win. PATH entries without a version
+# suffix get version "0" so they sort after versioned paths.
+sort_candidates_by_version() {
+    local line v p
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        p="$line"
+        # If the candidate is just "python3", probe it once via command -v.
+        if [[ "$p" != */* && "$p" != python3.1[012] ]]; then
+            p="$(command -v "$p" 2>/dev/null || true)"
+            [[ -z "$p" ]] && continue
+        fi
+        # Extract 3.XX from the path or binary name; bare "python3" → 3.0.
+        v="$(printf '%s\n' "$p" | sed -nE 's#.*/python(3\.[0-9]+)$#\1#p')"
+        [[ -z "$v" ]] && v="3.0"
+        printf '%s|%s\n' "$v" "$p"
+    done
+}
+
 PYTHON_BIN="${PYTHON:-}"
 if [[ -n "$PYTHON_BIN" ]]; then
     python_in_range "$PYTHON_BIN" || die "PYTHON=$PYTHON_BIN must be Python 3.10, 3.11, or 3.12."
 else
-    for candidate in python3.12 python3.11 python3.10 python3; do
+    # Track which candidates we already tried so duplicates from PATH +
+    # uv + flatpak paths don't shadow the first hit. We also reorder
+    # candidates by version descending (3.12 before 3.11 before 3.10)
+    # so the newest interpreter in range wins.
+    declare -A _py_seen=()
+    while IFS= read -r candidate; do
+        [[ -z "$candidate" ]] && continue
+        [[ -n "${_py_seen[$candidate]:-}" ]] && continue
+        _py_seen[$candidate]=1
         if python_in_range "$candidate"; then
             PYTHON_BIN="$candidate"
             break
         fi
-    done
-    [[ -n "$PYTHON_BIN" ]] || die "Python 3.10–3.12 not found. Install one or set PYTHON=/path/to/python3.12."
+    done < <(
+        discover_python_candidates \
+            | sort_candidates_by_version \
+            | sort -t'|' -k1,1 -V -r \
+            | cut -d'|' -f2-
+    )
+    unset _py_seen
+    if [[ -z "$PYTHON_BIN" ]]; then
+        cat >&2 <<EOF
+Python 3.10–3.12 was not found on this system. Tried:
+  - PATH (python3.12, python3.11, python3.10, python3)
+  - ~/.local/share/uv/python (uv-managed interpreters)
+  - ~/.local/bin (uv / python-build shims)
+  - ~/.pyenv/versions (pyenv)
+  - /usr/bin, /usr/local/bin, /opt/homebrew/bin
+  - ~/.var/app (Flatpak sandboxes)
+
+Install one of:
+  - uv:    uv python install 3.12
+  - pyenv: pyenv install 3.12
+  - apt:   sudo apt install python3.12 python3.12-venv
+  - brew:  brew install python@3.12
+
+Or set PYTHON=/path/to/python3.12 and rerun.
+EOF
+        die "No supported Python interpreter available."
+    fi
 fi
 
 PY_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 log "Detected Python $PY_VERSION ($PYTHON_BIN)"
 
 # --- 2. create / refresh the venv --------------------------------------------
+# Goal: `./launcher.sh` works with no arguments and no manual
+# POLYFORGE_VENV juggling. If a venv already exists and matches the
+# chosen Python, reuse it. If it exists with the wrong Python (e.g. an
+# old Python 3.14 venv left over from an earlier attempt), archive it
+# next to the new venv instead of aborting so the user never has to
+# rerun with a different POLYFORGE_VENV just to recover.
 needs_venv_create=0
 if [[ ! -d "$VENV_DIR" ]]; then
     needs_venv_create=1
 elif [[ ! -x "$VENV_DIR/bin/python" ]]; then
-    die "Existing venv at $VENV_DIR is incomplete; it was left untouched. Set POLYFORGE_VENV to a new path."
+    warn "Existing venv at $VENV_DIR is incomplete; it will be rebuilt."
+    mv "$VENV_DIR" "${VENV_DIR}.broken.$(date +%Y%m%d-%H%M%S).bak"
+    needs_venv_create=1
 elif ! python_in_range "$VENV_DIR/bin/python"; then
     existing_version="$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
-    die "Existing venv at $VENV_DIR uses Python $existing_version; it was left untouched. Set POLYFORGE_VENV to a new path using Python 3.10–3.12."
+    # The on-disk venv's Python is not the one we'll use, so we can't
+    # reuse it. Archive it (cheap, recoverable) and recreate.
+    _bak="${VENV_DIR}.py${existing_version}.bak"
+    if [[ -e "$_bak" ]]; then
+        _bak="${VENV_DIR}.py${existing_version}.$(date +%Y%m%d-%H%M%S).bak"
+    fi
+    warn "Existing venv at $VENV_DIR uses Python $existing_version (PolyForge needs 3.10–3.12)."
+    warn "Archiving it to $_bak and creating a fresh venv with Python $PY_VERSION."
+    mv "$VENV_DIR" "$_bak"
+    needs_venv_create=1
 fi
 
 if (( needs_venv_create )); then
-    log "Creating venv at $VENV_DIR (this may take a minute)…"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    # Make sure the source interpreter actually ships `venv` (Debian /
+    # Ubuntu split this into python3.12-venv and the base interpreter
+    # alone can't create venvs). If it can't, try to install the
+    # distro package via apt or fall back to `uv venv` as a last resort
+    # before giving up.
+    if ! "$PYTHON_BIN" -c 'import venv' >/dev/null 2>&1; then
+        warn "Python at $PYTHON_BIN lacks the 'venv' module; attempting to install it."
+        if command -v apt-get >/dev/null 2>&1; then
+            if [[ "$(id -u)" -eq 0 ]]; then
+                apt-get update -qq && apt-get install -y -qq "python${PY_VERSION}-venv" \
+                    || warn "apt-get install python${PY_VERSION}-venv failed; venv creation may still fail."
+            elif command -v sudo >/dev/null 2>&1 && [[ -t 0 ]]; then
+                warn "Need root to install python${PY_VERSION}-venv; falling back to 'uv venv' if available."
+                command -v uv >/dev/null 2>&1 && export _POLYFORGE_USE_UV_VENV=1
+            else
+                command -v uv >/dev/null 2>&1 && export _POLYFORGE_USE_UV_VENV=1
+            fi
+        elif command -v uv >/dev/null 2>&1; then
+            export _POLYFORGE_USE_UV_VENV=1
+        else
+            die "Python $PY_VERSION has no 'venv' module and no package manager is available. Install python${PY_VERSION}-venv manually."
+        fi
+    fi
+
+    log "Creating venv at $VENV_DIR with Python $PY_VERSION (this may take a minute)…"
+    if [[ "${_POLYFORGE_USE_UV_VENV:-}" == "1" ]]; then
+        # uv can synthesize a working venv even when the system Python
+        # is missing ensurepip / venv bindings.
+        uv venv --python "$PYTHON_BIN" "$VENV_DIR" \
+            || die "uv venv --python $PYTHON_BIN $VENV_DIR failed."
+    else
+        "$PYTHON_BIN" -m venv "$VENV_DIR" \
+            || die "Failed to create venv at $VENV_DIR with $PYTHON_BIN."
+    fi
 fi
+unset _POLYFORGE_USE_UV_VENV
 
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
