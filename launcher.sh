@@ -174,6 +174,72 @@ api_is_running() {
     return 0
 }
 
+# Best-effort: is *any* uvicorn bound to our port, regardless of PID file?
+# This is the safety net for the case where the PID file is stale (or
+# points to a defunct process) but a previous run's uvicorn is still
+# serving traffic. We can't read another process's PID from outside, so
+# we only get a yes/no answer; the caller decides what to do with it.
+#
+# We deliberately look for a *LISTEN* socket (``st == 0A`` in
+# /proc/net/tcp). A naive ``bind()`` test would return "in use" for
+# any TCP port in TIME_WAIT after the API shut down, which is a
+# false positive — TIME_WAIT is a closing connection, not a server.
+api_port_in_use() {
+    local port="${1:-8081}"
+    local port_hex
+    port_hex="$(printf '%04X' "$port")"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn "sport = :$port" 2>/dev/null | grep -q ":$port"
+        return $?
+    fi
+    # Fall back to /proc/net/tcp{,6} — same approach the kernel
+    # exposes through ss, so it tells the truth about LISTEN state.
+    # ``st`` column 4 is 0A for LISTEN.
+    if grep -qE ":${port_hex} [0-9A-F:]+ 0A" /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Resolve the PID of the process listening on $1 by parsing
+# /proc/net/tcp{,6}. Returns the PID on stdout, or empty on failure.
+#
+# /proc/net/tcp columns: sl  local_address rem_address st tx_queue rx_queue
+# tr tm smacet  retrnsmt   uid timeout inode
+# local_address is "IP:PORT" in hex. st == 0A (TCP_LISTEN). Each socket
+# has an inode; /proc/$pid/fd/* symlinks to "socket:[inode]".
+api_pid_from_port() {
+    local port_hex inode pid fd_link
+    port_hex="$(printf '%04X' "${1:-8081}")"
+    # Grep listens on this port, take the first match's inode (10th col).
+    # Use ``cut`` instead of awk/read so we never have to worry about
+    # the surrounding command substitution eating our field syntax.
+    # Inode is field 10 of /proc/net/tcp (sl local rem st tx rx tr tm
+    # retrnsmt uid timeout inode ...). After ``tr -s ' '`` collapses
+    # the ragged whitespace, ``cut`` uses 1-based indices but counts
+    # the leading space as a field, so the inode lives at index 11.
+    inode="$(grep -hE ":${port_hex} 0+:0+ 0A" /proc/net/tcp /proc/net/tcp6 2>/dev/null \
+        | head -n 1 | tr -s ' ' | cut -d' ' -f11)"
+    [[ -n "$inode" ]] || return 1
+    # Find the PID whose fd table contains a socket with that inode.
+    # Strategy: narrow to Python processes owned by us (pgrep is much
+    # faster than scanning /proc/[0-9]*/fd/*, and the uvicorn is the
+    # only Python process that opens a TCP listener), then match
+    # "socket:[INODE]" on each fd symlink.
+    local pid fd target needle="socket:[${inode}]"
+    for pid in $(pgrep -u "$(id -u)" python 2>/dev/null); do
+        for fd in "/proc/$pid/fd"/*; do
+            [[ -L "$fd" ]] || continue
+            target="$(readlink "$fd" 2>/dev/null || true)"
+            if [[ "$target" == "$needle" ]]; then
+                printf '%s\n' "$pid"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
 if [[ "${POLYFORGE_STOP_ONLY:-}" == "1" ]]; then
     pid="$(api_read_pid 2>/dev/null || true)"
     if [[ -z "$pid" ]]; then
@@ -201,22 +267,25 @@ if [[ "${POLYFORGE_STOP_ONLY:-}" == "1" ]]; then
 fi
 
 if [[ "${POLYFORGE_STATUS_ONLY:-}" == "1" ]]; then
-    pid="$(api_read_pid 2>/dev/null || true)"
-    if [[ -z "$pid" ]]; then
-        echo "stopped (no PID file)"
-        exit 1
-    fi
-    if ! kill -0 "$pid" 2>/dev/null; then
-        echo "stale (pid $pid not running)"
-        exit 1
-    fi
     port="${POLYFORGE_PORT:-8081}"
-    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-        echo "running (pid $pid, http://127.0.0.1:${port} healthy)"
+    if api_is_running; then
+        pid="$(api_read_pid)"
+        if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+            echo "running (pid $pid, http://127.0.0.1:${port} healthy)"
+            exit 0
+        fi
+        echo "starting (pid $pid, /health not yet answering)"
         exit 0
     fi
-    echo "starting (pid $pid, /health not yet answering)"
-    exit 0
+    # PID file says stopped, but the port might still be bound by an
+    # orphan uvicorn from a previous run. Report it so the user can
+    # decide whether to kill it.
+    if api_port_in_use "$port"; then
+        echo "port $port is held by an unknown process (no PID file); try: ss -ltnp sport = :$port"
+        exit 1
+    fi
+    echo "stopped (no PID file, port $port free)"
+    exit 1
 fi
 
 # --- idempotency: short-circuit if the API is already running -----------------
@@ -227,6 +296,13 @@ fi
 # file or a keyboard shortcut without worrying about double-starts.
 POLYFORGE_HOST="${POLYFORGE_HOST:-127.0.0.1}"
 POLYFORGE_PORT="${POLYFORGE_PORT:-8081}"
+
+# Self-heal: if the PID file points to a dead process, drop it so we
+# can start a fresh one without false "already running" results.
+if [[ -f "$API_PID_FILE" ]] && ! api_is_running; then
+    rm -f "$API_PID_FILE"
+fi
+
 if [[ "${POLYFORGE_FOREGROUND:-0}" != "1" && "${POLYFORGE_UI:-}" != "1" ]] && api_is_running; then
     existing_pid="$(api_read_pid)"
     if curl -fsS "http://${POLYFORGE_HOST}:${POLYFORGE_PORT}/health" >/dev/null 2>&1; then
@@ -243,6 +319,34 @@ if [[ "${POLYFORGE_FOREGROUND:-0}" != "1" && "${POLYFORGE_UI:-}" != "1" ]] && ap
         log "PolyForge API is starting (pid $existing_pid)…"
     fi
     exit 0
+fi
+
+# Last-resort: the port is in use but we have no PID for it. Two cases:
+#   1. /health answers OK → it's a previous run's uvicorn that we
+#      lost track of (PID file stale, setsid wrapper ate the PID,
+#      etc.). Re-adopt it by writing a fresh PID file (best effort) and
+#      short-circuit. We can't recover the original PID without
+#      /proc, so we just leave the running API alone and report success.
+#   2. /health does NOT answer → the port is held by something else
+#      entirely. Refuse to start a second uvicorn that would just fail
+#      to bind; tell the user how to recover.
+if [[ "${POLYFORGE_FOREGROUND:-0}" != "1" && "${POLYFORGE_UI:-}" != "1" ]] && api_port_in_use "$POLYFORGE_PORT"; then
+    if curl -fsS "http://${POLYFORGE_HOST}:${POLYFORGE_PORT}/health" >/dev/null 2>&1; then
+        log "PolyForge API is already running on port $POLYFORGE_PORT (orphan: no PID file). Open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ in your browser."
+        if [[ "${POLYFORGE_NO_BROWSER:-}" != "1" ]] && command -v xdg-open >/dev/null 2>&1; then
+            ( xdg-open "http://$POLYFORGE_HOST:$POLYFORGE_PORT/" >/dev/null 2>&1 & ) || true
+        fi
+        # Best-effort PID recovery: scan /proc for processes that own
+        # a TCP socket bound to our port. ``ss`` would do this for us
+        # but it's not always installed; reading /proc/net/tcp works
+        # everywhere.
+        orphan_pid="$(api_pid_from_port "$POLYFORGE_PORT" || true)"
+        if [[ -n "$orphan_pid" ]] && [[ "$orphan_pid" =~ ^[0-9]+$ ]]; then
+            printf '%s\n' "$orphan_pid" > "$API_PID_FILE"
+        fi
+        exit 0
+    fi
+    die "Port $POLYFORGE_PORT is already bound by another process (and /health is not answering). Run 'ss -ltnp sport = :$POLYFORGE_PORT' (or 'sudo lsof -iTCP:$POLYFORGE_PORT -sTCP:LISTEN') to find it, or use POLYFORGE_PORT to pick a different one."
 fi
 
 # --- desktop entry only (no Python/Node needed) -------------------------------
@@ -300,11 +404,52 @@ case "$install_mode" in
     *) die "Unknown install mode '$install_mode'. Choose auto, cuda, cpu, or api-only." ;;
 esac
 
+# Best-effort NVIDIA detection. ``nvidia-smi`` may be missing or
+# inaccessible inside a Flatpak / pressure-vessel sandbox even when
+# the host driver is loaded — in that case we still want CUDA. The
+# most reliable signal is the kernel's own view:
+# ``/proc/driver/nvidia/gpus/`` lists one PCI BDF per GPU when the
+# nvidia.ko module is up, regardless of which userspace tools are
+# visible to the sandbox.
+nvidia_smi_cmd=""
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia_smi_cmd="nvidia-smi"
+elif [[ -x /run/host/usr/bin/nvidia-smi ]]; then
+    # Inside a Flatpak the host binaries are bind-mounted under
+    # /run/host. nvidia-smi there talks to the host driver via the
+    # forwarded device nodes.
+    nvidia_smi_cmd="/run/host/usr/bin/nvidia-smi"
+fi
+
 has_nvidia=0
-if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+if [[ -d /proc/driver/nvidia/gpus ]]; then
+    # /proc/driver/nvidia/gpus/<BDF> exists for every GPU the kernel
+    # sees. The directory is empty (not absent) when no driver is
+    # loaded, so we count actual entries.
+    if [[ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]]; then
+        has_nvidia=1
+    fi
+fi
+if (( ! has_nvidia )) && [[ -n "$nvidia_smi_cmd" ]] && "$nvidia_smi_cmd" -L >/dev/null 2>&1; then
     has_nvidia=1
 fi
 
+# When the GPU is real but its libs live on the host (sandboxed
+# environment), prefer a Python interpreter that was *also* installed
+# on the host. Mixing a host Python (linked against the host glibc)
+# with sandbox loader paths works; mixing a Flatpak Python with the
+# host glibc is what produces the
+# ``__nptl_change_stack_perm: undefined symbol`` errors that break
+# every dynamically-linked binary the launcher shell calls.
+#
+# The default order in ``discover_python_candidates`` already
+# surfaces ``/run/host/usr/bin/python3.1X`` if the user has it, so
+# the venv will be created against the host interpreter and torch
+# will find libcuda naturally — no LD_LIBRARY_PATH hack required.
+# We only need to warn the user if the venv is currently on a
+# non-host Python and the GPU is real, because that's a setup
+# that is destined to fail. The check happens after ``PYTHON_BIN``
+# is resolved, just before the install.
 dotenv_device=""
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     dotenv_device="$(sed -n 's/^POLYFORGE_DEVICE=//p' "$SCRIPT_DIR/.env" | tail -n 1 | tr -d '\"' | xargs)"
@@ -407,14 +552,26 @@ discover_python_candidates() {
     if [[ -d "$pyenv_root/versions" ]]; then
         find "$pyenv_root/versions" -maxdepth 2 -type f -name 'python3.1[02]' 2>/dev/null
     fi
-    # 5. Standard system locations.
-    for p in /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3.10 \
-             /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.10 \
-             /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3.10; do
+    # 5. Standard system locations. When running inside a Flatpak /
+    #    pressure-vessel sandbox the host's /usr/bin is bind-mounted
+    #    under /run/host. Prefer that Python over the Flatpak one
+    #    below: they share a glibc, so venvs created against them
+    #    can transparently link against the host's CUDA libs.
+    for p in \
+        /run/host/usr/bin/python3.12 /run/host/usr/bin/python3.11 /run/host/usr/bin/python3.10 \
+        /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3.10 \
+        /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.10 \
+        /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3.10; do
         [[ -e "$p" ]] && printf '%s\n' "$p"
     done
     # 6. Flatpak app sandboxes (e.g. python interpreters shipped with VS Code).
-    if [[ -d "$HOME/.var/app" ]]; then
+    #    Skip when the host's Python is reachable: Flatpak pythons are
+    #    linked against a different glibc than /run/host/usr/lib, so
+    #    mixing them with the host CUDA libs (or any host /run/host
+    #    binary) produces ``__nptl_change_stack_perm`` style symbol
+    #    clashes inside the sandbox. Only fall through to Flatpak when
+    #    no host Python is available.
+    if [[ -d "$HOME/.var/app" ]] && [[ ! -x /run/host/usr/bin/python3.12 ]] && [[ ! -x /run/host/usr/bin/python3.11 ]] && [[ ! -x /run/host/usr/bin/python3.10 ]]; then
         find "$HOME/.var/app" -maxdepth 8 -type f -name 'python3.1[02]' 2>/dev/null
     fi
 }
@@ -488,6 +645,22 @@ fi
 PY_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 log "Detected Python $PY_VERSION ($PYTHON_BIN)"
 
+# Warn the user early if the GPU is real but the selected Python is
+# sandboxed (Flatpak, Steam Linux Runtime, …). The host glibc at
+# /run/host/usr/lib is incompatible with the sandbox Python and
+# causes the classic "Torch not compiled with CUDA" failure even
+# though torch is, in fact, built with CUDA support — it just
+# can't load libcuda at import time. We have PYTHON_BIN resolved
+# at this point so the case statement can tell host from sandbox.
+if (( has_nvidia )); then
+    case "$PYTHON_BIN" in
+        /run/host/*) ;;  # host Python — good
+        *)
+            warn "GPU detected but selected Python is $PYTHON_BIN (sandbox). If torch fails with 'CUDA not compiled', recreate the venv with: rm -rf $VENV_DIR && uv venv --python /run/host/usr/bin/python3.12 $VENV_DIR"
+            ;;
+    esac
+fi
+
 # --- 2. create / refresh the venv --------------------------------------------
 # Goal: `./launcher.sh` works with no arguments and no manual
 # POLYFORGE_VENV juggling. If a venv already exists and matches the
@@ -542,9 +715,12 @@ if (( needs_venv_create )); then
     fi
 
     log "Creating venv at $VENV_DIR with Python $PY_VERSION (this may take a minute)…"
-    if [[ "${_POLYFORGE_USE_UV_VENV:-}" == "1" ]]; then
+    if [[ "${_POLYFORGE_USE_UV_VENV:-}" == "1" ]] || command -v uv >/dev/null 2>&1; then
         # uv can synthesize a working venv even when the system Python
-        # is missing ensurepip / venv bindings.
+        # is missing ensurepip / venv bindings, and it works
+        # identically across host Python and Flatpak sandboxes
+        # (the latter often ships python without ensurepip). Prefer
+        # uv when available so the same path works everywhere.
         uv venv --python "$PYTHON_BIN" "$VENV_DIR" \
             || die "uv venv --python $PYTHON_BIN $VENV_DIR failed."
     else
@@ -561,9 +737,23 @@ source "$VENV_DIR/bin/activate"
 PYTHON="$VENV_DIR/bin/python"
 PIP=$(python -c 'import sys; print(sys.executable.replace("python", "pip", 1))' 2>/dev/null || echo "$VENV_DIR/bin/pip")
 
+# Wrapper that prefers ``$PYTHON -m pip`` but falls back to
+# ``uv pip`` when the venv has no pip module (typical for venvs
+# created with ``uv venv``, which skips ensurepip). ``uv pip`` is
+# API-compatible with the parts of pip we use here.
+py_install() {
+    if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+        "$PYTHON" -m pip install "$@"
+    elif command -v uv >/dev/null 2>&1; then
+        VIRTUAL_ENV="$VENV_DIR" uv pip install "$@"
+    else
+        die "venv at $VENV_DIR has no pip and uv is not installed. Recreate with: rm -rf $VENV_DIR && uv venv --python $PYTHON_BIN $VENV_DIR"
+    fi
+}
+
 # Upgrade pip + wheel first; wheel avoids egg-only installs.
 log "Upgrading pip + wheel + setuptools…"
-"$PYTHON" -m pip install --quiet --upgrade pip wheel setuptools
+py_install --quiet --upgrade pip wheel setuptools
 
 # --- 3. decide whether to reinstall the backend -------------------------------
 manifest_changed() {
@@ -603,7 +793,7 @@ install_individual_ml_deps() {
     # shifts with each diffusers release; the launcher always
     # installs the latest stable that the resolver finds. As of
     # diffusers 0.39 the floor is roughly transformers>=4.50.
-    "$PYTHON" -m pip install --quiet \
+    py_install --quiet \
         diffusers "transformers>=4.50" accelerate \
         einops omegaconf opencv-python-headless scikit-image \
         pymeshlab xatlas rembg onnxruntime || warn "Some individual ML packages failed; model loading will be partial."
@@ -624,10 +814,28 @@ do_backend_install() {
             log "Pre-installing CPU-only torch + torchvision…"
             TORCH_INSTALL=(--index-url https://download.pytorch.org/whl/cpu torch torchvision)
         else
-            log "Pre-installing torch + torchvision for the detected CUDA environment…"
-            TORCH_INSTALL=(torch torchvision)
+            # Pick the CUDA wheel index that matches the host driver.
+            # PyTorch wheels ship a fixed CUDA runtime; installing a
+            # torch built for CUDA X.Y against a driver that only
+            # supports X.(Y-1) will fail at import time. NVIDIA's
+            # compatibility matrix says driver >= 525 supports CUDA
+            # 12, >= 470 supports CUDA 11. We default to cu124 (CUDA
+            # 12.4) which is compatible with anything from driver
+            # 530+ onwards, covering every modern setup.
+            _driver="$(${nvidia_smi_cmd:-nvidia-smi} --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n 1 | tr -d ' ' || true)"
+            _cuda_tag="cu124"
+            if [[ -n "$_driver" ]]; then
+                _driver_major="${_driver%%.*}"
+                if (( _driver_major >= 470 && _driver_major < 525 )); then
+                    _cuda_tag="cu118"
+                elif (( _driver_major < 470 )); then
+                    _cuda_tag="cu116"
+                fi
+            fi
+            log "Pre-installing torch + torchvision for CUDA ($_cuda_tag; host driver $_driver)…"
+            TORCH_INSTALL=(--index-url "https://download.pytorch.org/whl/$_cuda_tag" torch torchvision)
         fi
-        if ! "$PYTHON" -m pip install --quiet "${TORCH_INSTALL[@]}"; then
+        if ! py_install --quiet "${TORCH_INSTALL[@]}"; then
             warn "torch install failed; will continue with the editable install and hope for the best."
         fi
     fi
@@ -635,7 +843,7 @@ do_backend_install() {
     # Step 2: editable install with the rest. --no-build-isolation so
     # the build sandbox can see torch and any other already-installed
     # packages.
-    if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[$extra]"; then
+    if py_install --quiet --no-build-isolation -e ".[$extra]"; then
         return 0
     fi
 
@@ -649,19 +857,19 @@ do_backend_install() {
     # individually and then do the editable dev extra for our own
     # package metadata.
     install_individual_ml_deps
-    if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[dev]"; then
+    if py_install --quiet --no-build-isolation -e ".[dev]"; then
         return 0
     fi
 
     warn "Even [dev] failed; trying API-only build."
-    if "$PYTHON" -m pip install --quiet --no-build-isolation -e ".[dev]"; then
+    if py_install --quiet --no-build-isolation -e ".[dev]"; then
         warn "Installed API-only build. ML inference is NOT available."
         export POLYFORGE_NO_ML=1
         return 0
     fi
 
     if [[ -f "$REQUIREMENTS" ]]; then
-        if "$PYTHON" -m pip install --quiet --no-build-isolation -r "$REQUIREMENTS"; then
+        if py_install --quiet --no-build-isolation -r "$REQUIREMENTS"; then
             return 0
         fi
     fi
@@ -676,7 +884,7 @@ fi
 
 if (( profile_changed )) || manifest_changed "$STAMP_FILE" "${BACKEND_MANIFESTS[@]}"; then
     if [[ "${POLYFORGE_NO_ML:-}" == "1" ]]; then
-        "$PYTHON" -m pip install --quiet -e ".[dev]"
+        py_install --quiet -e ".[dev]"
     else
         do_backend_install || die "Backend install failed."
     fi
@@ -690,7 +898,7 @@ fi
 # --- 4. ensure the package itself imports -------------------------------------
 if ! "$PYTHON" -c "import hy3dgen" >/dev/null 2>&1; then
     warn "hy3dgen not importable; reinstalling editable."
-    "$PYTHON" -m pip install --quiet -e ".[dev]" || die "Reinstall failed."
+    py_install --quiet -e ".[dev]" || die "Reinstall failed."
 fi
 
 # --- 5. optional model weights download ---------------------------------------
@@ -868,10 +1076,22 @@ if [[ "$POLYFORGE_FOREGROUND" != "1" ]]; then
 fi
 
 # Run uvicorn directly from the venv so re-installs are picked up immediately.
-# In detached mode we use ``setsid`` so the child becomes the leader of a new
-# session and survives the launcher's SIGHUP/exit; stdin is closed and
-# stdout/stderr go to the log file. The child PID is written to
-# ``$API_PID_FILE`` for ``--stop`` / ``--status``.
+# In detached mode we need the uvicorn to outlive this script and the
+# controlling terminal. The robust recipe is:
+#
+#   nohup setsid bash -c 'exec "$@"' -- <cmd> </dev/null >log 2>&1 &
+#
+# - ``nohup`` ignores SIGHUP so closing the terminal doesn't kill the
+#   grandchild. ``setsid`` puts the grandchild in a new session so it
+#   also ignores the terminal's process-group SIGHUP.
+# - The subshell ``bash -c 'exec ...'`` is the key trick: bash will
+#   ``exec`` the real uvicorn, so $! at the top level is the *uvicorn*
+#   PID (not setsid, not the bash subshell). Without ``exec`` the bash
+#   process would stick around and become the actual $! PID, which
+#   then dies when the terminal closes.
+# - ``</dev/null`` closes stdin so the uvicorn doesn't try to read
+#   from a closed pipe after the launcher exits.
+# - The PID we record in ``$API_PID_FILE`` is the uvicorn's.
 _api_cmd=("$VENV_DIR/bin/python" -m uvicorn hy3dgen.api.server:app --host "$POLYFORGE_HOST" --port "$POLYFORGE_PORT")
 
 if [[ "$POLYFORGE_FOREGROUND" == "1" ]]; then
@@ -880,14 +1100,40 @@ if [[ "$POLYFORGE_FOREGROUND" == "1" ]]; then
     API_PID=$!
     printf '%s\n' "$API_PID" > "$API_PID_FILE"
 else
-    # setsid detaches the child from the controlling terminal. The
-    # ``</dev/null`` closes stdin so the uvicorn never tries to read
-    # from a closed pipe when the launcher exits. setsid exec's the
-    # child directly, so $! is the real uvicorn PID.
+    # Background the whole ``nohup setsid bash -c 'exec ...' -- ...`` so
+    # the immediate $! is the subshell that immediately execs. We
+    # then read the actual uvicorn PID from the log line uvicorn
+    # prints on startup ("Started server process [PID]"), so the
+    # recorded PID is always the real server.
+    # Background the spawn so we can read the real uvicorn PID from
+    # the log. We avoid ``nohup`` because in sandboxed environments
+    # (Flatpak, Steam Linux Runtime) the ``nohup`` binary itself is
+    # linked against the sandbox glibc and breaks with
+    # "symbol lookup error" when the loader tries to resolve its
+    # own libc. ``setsid`` alone is enough: it puts the grandchild
+    # in a new session so SIGHUP from the terminal doesn't kill it.
     PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-        setsid "${_api_cmd[@]}" </dev/null >> "$LOG_DIR/api.log" 2>&1 &
+        setsid bash -c 'exec "$@"' -- "${_api_cmd[@]}" \
+            </dev/null >> "$LOG_DIR/api.log" 2>&1 &
     API_PID=$!
+    # ``nohup`` exec's its target, so $! is the setsid wrapper PID,
+    # not the uvicorn. Wait briefly for uvicorn to announce itself
+    # in the log, then read the real PID from there. Fall back to
+    # the wrapper PID if uvicorn hasn't started yet (the readiness
+    # probe below will catch the case where neither is alive).
+    for _ in {1..20}; do
+        sleep 0.1
+        line="$(grep -oE 'Started server process \[[0-9]+\]' "$LOG_DIR/api.log" 2>/dev/null | tail -n 1 || true)"
+        if [[ -n "$line" ]]; then
+            real_pid="$(printf '%s' "$line" | grep -oE '[0-9]+' || true)"
+            if [[ -n "$real_pid" ]] && kill -0 "$real_pid" 2>/dev/null; then
+                API_PID="$real_pid"
+                break
+            fi
+        fi
+    done
     printf '%s\n' "$API_PID" > "$API_PID_FILE"
+    disown 2>/dev/null || true
 fi
 
 # Brief readiness probe so users see a clear OK / ERROR before exiting.
