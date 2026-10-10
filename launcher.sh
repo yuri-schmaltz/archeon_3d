@@ -71,6 +71,12 @@
 #   --no-download-models
 #                       skip the weights download without asking
 #   --reinstall         same as POLYFORGE_FORCE_REINSTALL=1
+#   --foreground        keep the launcher in the foreground (Ctrl+C stops
+#                       the API). Default is detached: the API runs in its
+#                       own session and survives closing the terminal.
+#   --detach            explicit alias for the default detached behavior.
+#   --stop              stop a running PolyForge API (uses the PID file).
+#   --status            report whether the API is running and /health is OK.
 #   --help              show this help text and exit
 # -----------------------------------------------------------------------------
 
@@ -116,6 +122,10 @@ while (( $# )); do
         --no-desktop) POLYFORGE_NO_DESKTOP=1 ;;
         --install-desktop) POLYFORGE_INSTALL_DESKTOP_ONLY=1 ;;
         --uninstall-desktop) POLYFORGE_UNINSTALL_DESKTOP_ONLY=1 ;;
+        --stop) POLYFORGE_STOP_ONLY=1 ;;
+        --status) POLYFORGE_STATUS_ONLY=1 ;;
+        --foreground) POLYFORGE_FOREGROUND=1 ;;
+        --detach) POLYFORGE_FOREGROUND=0 ;;
         *) die "Unknown argument: $1 (try --help)";;
     esac
     shift
@@ -137,6 +147,103 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 STAMP_FILE="$SCRIPT_DIR/.polyforge_launcher.stamp"
 PROFILE_FILE="$SCRIPT_DIR/.polyforge_launcher.profile"
+API_PID_FILE="$SCRIPT_DIR/.polyforge_api.pid"
+
+# --- early-exit commands: --stop / --status -----------------------------------
+# Handle these BEFORE the Python/venv setup so they work even if the
+# interpreter or venv is broken / missing. The PID file is the source of
+# truth for "is the API running?".
+api_read_pid() {
+    [[ -f "$API_PID_FILE" ]] || return 1
+    local pid
+    pid="$(tr -d '[:space:]' < "$API_PID_FILE" 2>/dev/null || true)"
+    [[ -n "$pid" ]] || return 1
+    printf '%s\n' "$pid"
+}
+
+api_is_running() {
+    local pid
+    pid="$(api_read_pid 2>/dev/null || true)"
+    [[ -n "$pid" ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    # Confirm it's actually our uvicorn (PPID might have been reparented to
+    # init if the launcher exited).
+    local cmd
+    cmd="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+    [[ "$cmd" == "python"* ]] || return 1
+    return 0
+}
+
+if [[ "${POLYFORGE_STOP_ONLY:-}" == "1" ]]; then
+    pid="$(api_read_pid 2>/dev/null || true)"
+    if [[ -z "$pid" ]]; then
+        log "No API is running (no PID file at $API_PID_FILE)."
+        exit 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        log "Stale PID file: process $pid is gone. Removing it."
+        rm -f "$API_PID_FILE"
+        exit 0
+    fi
+    log "Stopping PolyForge API (pid $pid)…"
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+        if ! kill -0 "$pid" 2>/dev/null; then break; fi
+        sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        warn "Process $pid did not exit; sending SIGKILL."
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$API_PID_FILE"
+    log "API stopped."
+    exit 0
+fi
+
+if [[ "${POLYFORGE_STATUS_ONLY:-}" == "1" ]]; then
+    pid="$(api_read_pid 2>/dev/null || true)"
+    if [[ -z "$pid" ]]; then
+        echo "stopped (no PID file)"
+        exit 1
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "stale (pid $pid not running)"
+        exit 1
+    fi
+    port="${POLYFORGE_PORT:-8081}"
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+        echo "running (pid $pid, http://127.0.0.1:${port} healthy)"
+        exit 0
+    fi
+    echo "starting (pid $pid, /health not yet answering)"
+    exit 0
+fi
+
+# --- idempotency: short-circuit if the API is already running -----------------
+# Defaults match the rest of the launcher. The check happens BEFORE the
+# Python/venv/pip/npm setup so a second invocation of `./launcher.sh`
+# (e.g. after the user re-opens a terminal) is instant: no reinstall,
+# no rebuild. This also means the launcher can be wired up to a desktop
+# file or a keyboard shortcut without worrying about double-starts.
+POLYFORGE_HOST="${POLYFORGE_HOST:-127.0.0.1}"
+POLYFORGE_PORT="${POLYFORGE_PORT:-8081}"
+if [[ "${POLYFORGE_FOREGROUND:-0}" != "1" && "${POLYFORGE_UI:-}" != "1" ]] && api_is_running; then
+    existing_pid="$(api_read_pid)"
+    if curl -fsS "http://${POLYFORGE_HOST}:${POLYFORGE_PORT}/health" >/dev/null 2>&1; then
+        log "PolyForge API is already running (pid $existing_pid) at http://$POLYFORGE_HOST:$POLYFORGE_PORT/"
+        # Only open the browser when we know the user actually wants it
+        # (the browser flag is parsed later; reuse POLYFORGE_NO_BROWSER
+        # which the user can set). Default to opening the browser on
+        # loopback binds.
+        if [[ "${POLYFORGE_NO_BROWSER:-}" != "1" ]] && command -v xdg-open >/dev/null 2>&1; then
+            ( xdg-open "http://$POLYFORGE_HOST:$POLYFORGE_PORT/" >/dev/null 2>&1 & ) || true
+            log "Opened the PolyForge UI in your default browser."
+        fi
+    else
+        log "PolyForge API is starting (pid $existing_pid)…"
+    fi
+    exit 0
+fi
 
 # --- desktop entry only (no Python/Node needed) -------------------------------
 # --install-desktop / --uninstall-desktop exit here, before any toolchain
@@ -744,21 +851,44 @@ else
     log "API key auth: disabled (binding $POLYFORGE_HOST is loopback)"
 fi
 
-# Honour SIGINT / SIGTERM for graceful shutdown.
-trap 'log "Caught signal — shutting down."; kill -TERM "$API_PID" 2>/dev/null || true; wait "$API_PID" 2>/dev/null || true; exit 0' INT TERM
+# Decide between detached and foreground mode.
+# Default: detached — the API runs in its own session so closing the
+# terminal does not kill it. Use --foreground to keep the old
+# "launcher stays in the foreground, Ctrl+C stops everything" behavior.
+POLYFORGE_FOREGROUND="${POLYFORGE_FOREGROUND:-0}"
+
+# Honour SIGINT / SIGTERM for graceful shutdown (only used in foreground mode).
+trap 'log "Caught signal — shutting down."; if [[ -n "${API_PID:-}" ]]; then kill -TERM "$API_PID" 2>/dev/null || true; wait "$API_PID" 2>/dev/null || true; fi; rm -f "$API_PID_FILE"; exit 0' INT TERM
 
 log "Starting PolyForge API on http://$POLYFORGE_HOST:$POLYFORGE_PORT"
 log "Open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ in your browser for the PolyForge UI."
 log "Logs: tail -f $LOG_DIR/api.log"
+if [[ "$POLYFORGE_FOREGROUND" != "1" ]]; then
+    log "Detached mode: the API keeps running after this script exits. Stop with: ./launcher.sh --stop"
+fi
 
 # Run uvicorn directly from the venv so re-installs are picked up immediately.
-PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-    "$VENV_DIR/bin/python" -m uvicorn \
-    hy3dgen.api.server:app \
-    --host "$POLYFORGE_HOST" \
-    --port "$POLYFORGE_PORT" \
-    >> "$LOG_DIR/api.log" 2>&1 &
-API_PID=$!
+# In detached mode we use ``setsid`` so the child becomes the leader of a new
+# session and survives the launcher's SIGHUP/exit; stdin is closed and
+# stdout/stderr go to the log file. The child PID is written to
+# ``$API_PID_FILE`` for ``--stop`` / ``--status``.
+_api_cmd=("$VENV_DIR/bin/python" -m uvicorn hy3dgen.api.server:app --host "$POLYFORGE_HOST" --port "$POLYFORGE_PORT")
+
+if [[ "$POLYFORGE_FOREGROUND" == "1" ]]; then
+    PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        "${_api_cmd[@]}" >> "$LOG_DIR/api.log" 2>&1 &
+    API_PID=$!
+    printf '%s\n' "$API_PID" > "$API_PID_FILE"
+else
+    # setsid detaches the child from the controlling terminal. The
+    # ``</dev/null`` closes stdin so the uvicorn never tries to read
+    # from a closed pipe when the launcher exits. setsid exec's the
+    # child directly, so $! is the real uvicorn PID.
+    PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        setsid "${_api_cmd[@]}" </dev/null >> "$LOG_DIR/api.log" 2>&1 &
+    API_PID=$!
+    printf '%s\n' "$API_PID" > "$API_PID_FILE"
+fi
 
 # Brief readiness probe so users see a clear OK / ERROR before exiting.
 for _ in {1..40}; do
@@ -769,6 +899,7 @@ for _ in {1..40}; do
     if ! kill -0 "$API_PID" 2>/dev/null; then
         warn "API process exited. Last 30 log lines:"
         tail -n 30 "$LOG_DIR/api.log" >&2 || true
+        rm -f "$API_PID_FILE"
         exit 1
     fi
     sleep 0.5
@@ -777,7 +908,9 @@ done
 # --- 8. open the UI in the default browser ------------------------------------
 # Only when the API answered /health above, only for loopback binds, and
 # never in headless sessions. Opt out with --no-browser /
-# POLYFORGE_NO_BROWSER=1.
+# POLYFORGE_NO_BROWSER=1. Exposed as a function so the "already running"
+# short-circuit above can reuse it without duplicating the loopback /
+# headless / platform logic.
 open_browser() {
     local url="$1"
     if command -v xdg-open >/dev/null 2>&1; then
@@ -793,24 +926,38 @@ open_browser() {
     fi
 }
 
-if [[ "${POLYFORGE_NO_BROWSER:-}" != "1" ]]; then
+open_browser_if_desired() {
+    local url="$1"
+    [[ "${POLYFORGE_NO_BROWSER:-}" != "1" ]] || return 0
     case "$POLYFORGE_HOST" in
         127.0.0.1|::1|localhost)
             if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || [[ "$OSTYPE" == darwin* ]]; then
-                if open_browser "http://$POLYFORGE_HOST:$POLYFORGE_PORT/"; then
+                if open_browser "$url"; then
                     log "Opened the PolyForge UI in your default browser."
                 else
-                    log "Open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ in your browser for the PolyForge UI."
+                    log "Open $url in your browser for the PolyForge UI."
                 fi
             else
-                log "Headless session — open http://$POLYFORGE_HOST:$POLYFORGE_PORT/ from a browser."
+                log "Headless session — open $url from a browser."
             fi
             ;;
         *)
             log "Remote bind ($POLYFORGE_HOST) — open the UI manually (browser auto-open is loopback-only)."
             ;;
     esac
-fi
+}
 
-log "Press Ctrl+C to stop."
-wait "$API_PID"
+open_browser_if_desired "http://$POLYFORGE_HOST:$POLYFORGE_PORT/"
+
+if [[ "$POLYFORGE_FOREGROUND" == "1" ]]; then
+    log "Press Ctrl+C to stop."
+    wait "$API_PID"
+    rm -f "$API_PID_FILE"
+else
+    log "PolyForge API is running in the background. You can close this terminal."
+    log "Stop it with:  ./launcher.sh --stop"
+    log "Check it with: ./launcher.sh --status"
+    log "Tail logs with: tail -f $LOG_DIR/api.log"
+    # Hand the API off to init so it survives the launcher's exit.
+    disown "$API_PID" 2>/dev/null || true
+fi
